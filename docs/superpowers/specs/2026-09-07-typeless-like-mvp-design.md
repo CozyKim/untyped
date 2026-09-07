@@ -9,8 +9,8 @@
 
 MVP의 완성 기준은 **핵심 루프 하나**다.
 
-> 핫키를 누른다 → 말한다 → 필러가 제거되고 문장부호가 정리된 텍스트가
-> 지금 포커스된 앱의 커서 위치에 들어간다.
+> 핫키를 누른다 → 말하는 동안 화면에 상태와 목소리 레벨이 보인다 → 필러가
+> 제거되고 문장부호가 정리된 텍스트가 지금 포커스된 앱의 커서 위치에 들어간다.
 
 이 루프가 손에 익을 만큼 동작하면 MVP는 끝이다. 여기서 얻은 체감으로 다음 범위를
 정한다.
@@ -21,7 +21,7 @@ MVP의 완성 기준은 **핵심 루프 하나**다.
 
 - 설정 창 (핫키 변경, 다듬기 강도, 톤 선택)
 - 받아쓰기 기록/히스토리
-- 말하는 중 실시간 부분 전사 오버레이
+- 오버레이의 실시간 전사 텍스트 (상태와 오디오 레벨은 9절에서 다룬다)
 - 앱별 문체 적응
 - 한국어 외 언어 전환 UI
 - 배포용 패키징 (공증, 자동 업데이트, 샌드박스)
@@ -47,8 +47,9 @@ API 시그니처는 SDK의 `.swiftinterface`에서 직접 확인했다
 
 구현 순서를 정하는 근거다. 사실로 취급하지 않는다.
 
-1. 클립보드 백업 + `⌘V` 합성으로 임의의 앱에 텍스트를 넣을 수 있는가, 그리고
-   클립보드를 언제 복원해야 붙여넣기가 옛 내용을 집어가지 않는가.
+1. 클립보드 백업 + `⌘V` 합성으로 임의의 앱에 텍스트를 넣을 수 있는가, 클립보드를
+   언제 복원해야 붙여넣기가 옛 내용을 집어가지 않는가, 그리고 오버레이 패널이
+   떠 있어도 원래 앱이 텍스트 포커스를 유지하는가.
 2. 오른쪽 `⌥` 단독 키를 `flagsChanged`로 눌림/뗌 모두 안정적으로 받을 수 있는가.
 3. 3B 모델이 한국어 구어체를 요약하거나 없던 내용을 지어내지 않고 다듬는가.
 
@@ -79,10 +80,12 @@ Resources/Info.plist       LSUIElement, 번들 ID, 마이크 권한 문자열
 ```
 Sources/TypelessLike/
   App/        MenuBarApp.swift              SwiftUI MenuBarExtra, 상태 아이콘
+              OverlayPanel.swift            비활성 NSPanel - 상태 + 레벨 미터
   Core/       DictationState.swift          상태 기계 - 순수, 부수효과 없음
               Coordinator.swift             상태 기계와 실제 컴포넌트 배선
   Input/      HotkeyMonitor.swift           전역 키 이벤트 → TriggerEvent
-              AudioCapture.swift            AVAudioEngine → AsyncStream<AnalyzerInput>
+              AudioCapture.swift            AVAudioEngine → AnalyzerInput + 레벨
+              AudioLevel.swift              RMS 계산 - 순수 함수
   Transcribe/ Transcriber.swift             SpeechAnalyzer 래핑 → String
   Refine/     TextRefiner.swift             protocol
               FoundationModelsRefiner.swift
@@ -90,6 +93,7 @@ Sources/TypelessLike/
   Output/     TextInserter.swift            클립보드 백업 → ⌘V 합성 → 복원
 Tests/TypelessLikeTests/
               DictationStateTests.swift
+              AudioLevelTests.swift
               TextRefinerFallbackTests.swift
 ```
 
@@ -199,6 +203,7 @@ HotkeyMonitor ──TriggerEvent──▶ Coordinator ──reduce──▶ Effe
                                       │ startCapture
                                       ▼
                      AudioCapture (AVAudioEngine + AVAudioConverter)
+                                      │ 레벨(RMS) ─▶ Coordinator ─▶ OverlayPanel
                                       │ AsyncStream<AnalyzerInput>
                                       ▼
                      Transcriber (SpeechAnalyzer + SpeechTranscriber)
@@ -238,7 +243,70 @@ MVP에 실시간 미리보기가 없으므로 `volatileResults`가 필요 없다
 
 4번의 지연값은 실측으로 정한다. 너무 짧으면 붙여넣기가 옛 내용을 집어간다.
 
-## 9. 에러 처리
+## 9. 오버레이
+
+녹음 중임을 화면에서 확인할 수 있어야 한다. 메뉴바 아이콘만으로는 시선이 닿지
+않는다.
+
+### 표시 내용
+
+상태(`녹음 중` / `다듬는 중`)와 목소리 레벨 미터. **전사 텍스트는 띄우지 않는다.**
+
+"내 목소리가 잡히고 있다"는 확인에는 레벨 미터로 충분하고, 텍스트를 띄우려면
+전사를 `.progressiveTranscription`으로 바꾸고 확정되지 않은 중간 결과가 계속
+고쳐지는 것을 UI에서 처리해야 한다. 그 비용을 MVP에서 지불하지 않는다.
+
+### 포커스를 빼앗지 않는 것이 핵심 제약
+
+오버레이가 키 윈도우가 되면 원래 앱의 텍스트 포커스가 풀려 8절의 `⌘V` 삽입이
+엉뚱한 곳으로 간다. 앱의 핵심 기능이 깨지는 문제다. `NSPanel`을 다음 설정으로
+만든다.
+
+| 설정 | 값 | 이유 |
+| --- | --- | --- |
+| `styleMask` | `[.nonactivatingPanel, .borderless]` | 앱을 활성화시키지 않는다 |
+| `canBecomeKey` | `false` (오버라이드) | 키 윈도우가 되지 않는다 |
+| `ignoresMouseEvents` | `true` | 클릭이 아래 앱으로 통과한다 |
+| `level` | `.floating` | 다른 창 위에 뜬다 |
+| `collectionBehavior` | `[.canJoinAllSpaces, .fullScreenAuxiliary]` | 전체화면 앱 위에도 뜬다 |
+| `isOpaque` / `backgroundColor` | `false` / `.clear` | 둥근 모서리 배경을 직접 그린다 |
+
+이 조합은 3절 가설 1에 포함되어 있고 삽입 스파이크에서 함께 검증한다. 따로
+검증하면 의미가 없다.
+
+### 레벨 계산
+
+`AudioCapture`의 탭에서 이미 받고 있는 버퍼로 RMS를 구한다. 별도 오디오 경로를
+만들지 않는다.
+
+```swift
+func rms(_ samples: UnsafeBufferPointer<Float>) -> Float
+```
+
+포인터를 받는 이유는 오디오 콜백마다 배열을 복사하지 않기 위해서다. 테스트에서는
+`[Float]`로부터 만들면 되므로 검증에 지장이 없다.
+
+값은 dB로 변환해 표시 범위로 클램프한다. 별도 스무딩 코드는 넣지 않는다 —
+업데이트가 오디오 버퍼 주기로 들어오므로 SwiftUI의 `.animation(.linear)`이
+떨림을 흡수한다.
+
+### 상태를 받는 경로
+
+`OverlayPanel`은 `AudioCapture`를 직접 보지 않는다. 5절의 의존 방향을 지키기
+위해서다. `Coordinator`가 현재 `DictationState`와 최신 레벨을 관찰 가능한 상태로
+노출하고, `OverlayPanel`은 그것만 읽는다.
+
+덕분에 오버레이는 오디오 엔진도 전사도 모른 채 그릴 수 있고, 렌더링 없이
+`Coordinator` 상태만으로 동작을 확인할 수 있다.
+
+### 위치와 수명
+
+화면 하단 중앙 고정. 마우스를 따라다니지 않는다.
+
+`idle`에서는 감춘다. `holding` 또는 `toggled`에 들어갈 때 띄우고, 삽입이 끝나
+`idle`로 돌아갈 때 감춘다.
+
+## 10. 에러 처리
 
 모든 실패는 "덜 좋은 결과"로 떨어진다. 아무것도 못 하는 상태로 가지 않는다.
 
@@ -254,7 +322,7 @@ MVP에 실시간 미리보기가 없으므로 `volatileResults`가 필요 없다
 원칙: 다듬기 실패가 받아쓰기를 죽이지 않는다. LLM은 품질 향상 레이어이지 필수
 경로가 아니다.
 
-## 10. 트리거 키
+## 11. 트리거 키
 
 기본값은 오른쪽 `⌥`(Option) 단독이다.
 
@@ -265,34 +333,38 @@ MVP에 실시간 미리보기가 없으므로 `volatileResults`가 필요 없다
 이는 아직 검증하지 못한 선택이며 3절의 가설 2번에 해당한다. MVP에서 키는 코드
 상수로 두고 변경 UI는 만들지 않는다.
 
-## 11. 테스트 전략
+## 12. 테스트 전략
 
 자동화는 가치가 확실한 곳에만 건다.
 
 - `DictationState.reduce` — 7절 전이표를 전수 검증한다. 250ms 경계 양쪽을 모두
   포함한다. `ContinuousClock.Instant`를 인자로 받으므로 시간을 주입해 결정적으로
   테스트된다.
+- `AudioLevel.rms` — 무음, 최대 진폭, 빈 버퍼를 검증한다. 순수 함수다.
 - `TextRefiner` 폴백 — 항상 throw하는 스텁으로 Coordinator가 원본을 삽입하는지
   검증한다.
 
-오디오 캡처, 전역 키 이벤트, 텍스트 삽입은 시스템 권한과 실제 하드웨어에 의존해
-수동으로 검증한다. 자동화 비용이 얻는 신뢰보다 크다.
+오디오 캡처, 전역 키 이벤트, 텍스트 삽입, 오버레이 포커스 동작은 시스템 권한과
+실제 하드웨어에 의존해 수동으로 검증한다. 자동화 비용이 얻는 신뢰보다 크다.
 
-## 12. 구현 순서
+## 13. 구현 순서
 
 3절의 미검증 가설을 먼저 없앤다. 1번이 실패하면 설계 전체가 흔들리므로 코드를
 쌓기 전에 확인한다.
 
-1. **삽입 스파이크** — 클립보드 백업/`⌘V` 합성/복원이 실제 앱에서 동작하는지,
-   복원 지연은 얼마여야 하는지 확인한다. 결과에 따라 8절 삽입 절차를 확정한다.
+1. **삽입 + 오버레이 스파이크** — 클립보드 백업/`⌘V` 합성/복원이 실제 앱에서
+   동작하는지, 복원 지연은 얼마여야 하는지, 그리고 9절 설정의 `NSPanel`이 떠
+   있어도 삽입이 정상인지 확인한다. 결과에 따라 8절 삽입 절차와 9절 패널 설정을
+   확정한다.
 2. **핫키 스파이크** — 오른쪽 `⌥` 단독의 `flagsChanged` 눌림/뗌 수신을 확인한다.
    실패 시 대체 키를 정한다.
 3. `DictationState.reduce` — 테스트 먼저, 그다음 구현.
-4. `AudioCapture` + `Transcriber` — 녹음한 한국어가 문자열로 나오는 데까지.
+4. `AudioCapture` + `AudioLevel` + `Transcriber` — 녹음한 한국어가 문자열로
+   나오는 데까지. RMS는 테스트 먼저.
 5. `TextRefiner` 두 구현체와 폴백 경로. 실제 한국어 구어체 전사를 넣어 6절
    지시문이 요약과 환각을 막는지 확인한다(가설 3). 막지 못하면 방어 로직을
    여기서 추가한다.
-6. `Coordinator` 배선 + `MenuBarApp` 상태 아이콘.
+6. `Coordinator` 배선 + `MenuBarApp` 상태 아이콘 + `OverlayPanel`.
 7. `Scripts/bundle.sh`와 권한 요청 흐름.
 
 1번과 2번의 산출물은 버리는 코드다. 확인이 끝나면 결론만 남기고 폐기한다.
