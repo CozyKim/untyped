@@ -9,8 +9,9 @@
 
 MVP의 완성 기준은 **핵심 루프 하나**다.
 
-> 핫키를 누른다 → 말하는 동안 화면에 상태와 목소리 레벨이 보인다 → 필러가
-> 제거되고 문장부호가 정리된 텍스트가 지금 포커스된 앱의 커서 위치에 들어간다.
+> 핫키를 누른다 → 말하는 동안 화면에 상태와 목소리 레벨이 보인다 → 필러와
+> 말 더듬음이 제거되고 스스로 고친 말은 최종 의도만 남은 텍스트가, 지금 포커스된
+> 앱의 커서 위치에 들어간다.
 
 이 루프가 손에 익을 만큼 동작하면 MVP는 끝이다. 여기서 얻은 체감으로 다음 범위를
 정한다.
@@ -30,18 +31,57 @@ MVP의 완성 기준은 **핵심 루프 하나**다.
 
 추측이 아니라 이 머신에서 실행해 확인한 사실이다.
 
-| 항목 | 확인값 | 확인 방법 |
-| --- | --- | --- |
-| macOS | 26.5.2 (Tahoe), arm64 | `sw_vers`, `uname -m` |
-| Xcode / Swift | 26.6 / 6.3.3 | `xcodebuild -version`, `swift --version` |
-| SpeechTranscriber 한국어 | `ko-KR` 지원, 모델 설치 완료 | `supportedLocales` / `installedLocales` 실행 |
-| Foundation Models | `availability == .available` | `SystemLanguageModel.default` 실행 |
-| Foundation Models 한국어 | `ko-Kore-KR` 포함 | `supportedLanguages` 실행 |
-| Ollama | 설치됨, `qwen3.5:9b` 보유 | `ollama list` |
-| 프로젝트 생성 도구 | xcodegen / tuist 모두 없음 | `which` |
+### 환경
 
-API 시그니처는 SDK의 `.swiftinterface`에서 직접 확인했다
-(`MacOSX26.5.sdk` 내 `Speech.swiftmodule`, `FoundationModels.swiftmodule`).
+| 항목 | 확인값 |
+| --- | --- |
+| macOS | 26.5.2 (Tahoe), arm64 |
+| Xcode / Swift | 26.6 / 6.3.3 |
+| SpeechTranscriber 한국어 | `ko-KR` 지원, 모델 설치 완료 |
+| 전사 목표 오디오 포맷 | 16 kHz, 1 ch, Int16 |
+| SwiftPM 빌드 | `platforms: [.macOS(.v26)]` + Swift Testing으로 빌드·테스트 통과 |
+| oMLX | `127.0.0.1:8081`, `gemma-4-e2b-it-8bit` 서빙 |
+
+### 다듬기 백엔드 선정 근거
+
+한국어 구어체 샘플로 네 후보를 측정했다. 채점은 필러 제거·자기 수정 반영·내용
+보존을 항목화해 자동으로 매겼다.
+
+| 후보 | 지연 | 결과 |
+| --- | --- | --- |
+| Apple Foundation Models 3B | 6.8~11초 | **기각.** 구체적 지시문을 주면 가드레일이 무해한 업무 문장을 3/3 차단(`guardrailViolation: May contain unsafe content`). 영어 지시문은 차단을 피하는 대신 한국어를 영어로 번역해버린다 |
+| Ollama `qwen3.5:9b` | 20초 | **기각.** `keep_alive`로 로드를 0.34초까지 줄여도 호출당 20초. 지시를 무시하고 설명을 늘어놓는다 |
+| gemma4 e2b 오디오 직결 | 1.4~4.1초 | **기각.** 짧은 발화는 완벽하지만 20초를 넘기면 필러도 자기 수정도 처리하지 못하고 전사 수준으로 퇴화한다 |
+| **Apple 전사 → gemma4 텍스트 다듬기** | **2.0~5.4초** | **채택.** 긴 샘플 두 건 모두 만점 |
+
+### 채택안의 실측치
+
+| 발화 길이 | 다듬기 지연 |
+| --- | --- |
+| 5초 내외 | 0.8~1.0초 |
+| 21초 | 2.0초 |
+| 30초 | 5.4초 |
+
+전사는 `SpeechAnalyzer`가 말하는 동안 스트리밍으로 처리하므로 말이 끝난 시점에는
+이미 끝나 있다. 위 지연이 체감 지연의 전부다.
+
+부수 효과로 확인된 것: gemma4가 전사기의 외래어 오인식 일부를 문맥으로 교정한다
+(`리펙터링`→`리팩터링`, `데시보드`→`대시보드`). `AnalysisContext.contextualStrings`로
+어휘 힌트를 주는 방법은 6개 샘플 전부 결과가 바뀌지 않아 효과를 확인하지 못했다.
+
+### oMLX 프롬프트 캐시 결함과 우회
+
+oMLX는 프롬프트 캐시 키를 **텍스트 프리픽스로만 계산하고 오디오를 무시한다.**
+같은 시스템 프롬프트로 서로 다른 오디오를 보내면 먼저 보낸 오디오의 전사가 그대로
+돌아온다. 받아쓰기 앱에서는 말한 것과 다른 문장이 삽입되는 최악의 실패다.
+
+시스템 프롬프트 끝에 매 요청 고유한 nonce를 붙이면 사라진다. 우회책이 아니라
+**필수 요구사항**으로 취급한다(6절). 캐시를 포기해도 오히려 빨랐으므로 잃는 것은
+없다.
+
+이 결함은 오디오를 보낼 때 관찰했다. 채택안은 텍스트만 보내므로 직접 노출되지
+않지만, 같은 캐시 로직이 텍스트 프리픽스에도 적용되는 이상 few-shot 프리픽스가
+고정된 우리 요청은 동일한 위험을 갖는다. 그래서 텍스트 경로에도 nonce를 붙인다.
 
 ### 아직 검증하지 못한 가설
 
@@ -51,7 +91,8 @@ API 시그니처는 SDK의 `.swiftinterface`에서 직접 확인했다
    언제 복원해야 붙여넣기가 옛 내용을 집어가지 않는가, 그리고 오버레이 패널이
    떠 있어도 원래 앱이 텍스트 포커스를 유지하는가.
 2. 오른쪽 `⌥` 단독 키를 `flagsChanged`로 눌림/뗌 모두 안정적으로 받을 수 있는가.
-3. 3B 모델이 한국어 구어체를 요약하거나 없던 내용을 지어내지 않고 다듬는가.
+3. **위 측정은 전부 `say` TTS 음성이다.** 실제 육성에서 전사와 다듬기가 같은
+   품질을 내는지는 확인하지 못했다.
 
 ## 4. 프로젝트 형태
 
@@ -72,6 +113,15 @@ Resources/Info.plist       LSUIElement, 번들 ID, 마이크 권한 문자열
 
 최소 배포 타깃은 macOS 26.0, Swift 6 strict concurrency를 켠다.
 
+### 외부 의존성
+
+앱 자체는 의존 패키지가 없지만, **다듬기는 OpenAI 호환 API를 여는 로컬 서버에
+의존한다.** 개발 환경에서는 oMLX가 `127.0.0.1:8081`에서 `gemma-4-e2b-it-8bit`를
+서빙한다.
+
+서버가 떠 있지 않으면 다듬기를 건너뛰고 전사 원문을 그대로 삽입한다(10절). 앱이
+못 쓰게 되지는 않는다.
+
 감수하는 비용: 코드 서명이 수동이다. 재빌드마다 ad-hoc 서명 해시가 바뀌면 손쉬운
 사용 권한을 다시 승인해야 할 수 있다. 개발 중 반복되면 고정 서명 신원으로 바꾼다.
 
@@ -87,14 +137,15 @@ Sources/TypelessLike/
               AudioCapture.swift            AVAudioEngine → AnalyzerInput + 레벨
               AudioLevel.swift              RMS 계산 - 순수 함수
   Transcribe/ Transcriber.swift             SpeechAnalyzer 래핑 → String
-  Refine/     TextRefiner.swift             protocol
-              FoundationModelsRefiner.swift
-              OllamaRefiner.swift
+  Refine/     TextRefiner.swift             protocol + 폴백 정책
+              OpenAICompatibleRefiner.swift  /v1/chat/completions 클라이언트
+              RefinementPrompt.swift        규칙 + few-shot 예시
   Output/     TextInserter.swift            클립보드 백업 → ⌘V 합성 → 복원
 Tests/TypelessLikeTests/
               DictationStateTests.swift
               AudioLevelTests.swift
               TextRefinerFallbackTests.swift
+              RefinementPromptTests.swift
 ```
 
 의존 방향은 한 방향이다.
@@ -106,7 +157,7 @@ App → Core → { Input, Transcribe, Refine, Output }
 하위 네 그룹은 서로를 모른다. 강제되는 구체적 규칙:
 
 - `Refine/`은 `Speech`를 import하지 않는다.
-- `Transcribe/`는 `FoundationModels`를 import하지 않는다.
+- `Transcribe/`는 HTTP도 프롬프트도 모른다.
 - `Output/`은 전사도 다듬기도 모르고, 완성된 문자열만 받는다.
 
 전사 엔진이나 다듬기 백엔드를 갈아끼울 때 서로를 건드리지 않기 위한 경계다.
@@ -122,35 +173,75 @@ protocol TextRefiner: Sendable {
 }
 ```
 
-입력도 출력도 순수 문자열이다. 오디오, 로케일, 삽입 대상 앱을 모른다. 덕분에
-Apple 모델과 Ollama가 같은 계약 아래 들어온다.
+입력도 출력도 순수 문자열이다. 오디오, 로케일, 삽입 대상 앱을 모른다.
 
-구현체가 처음부터 둘 실재하므로 이 추상화는 투기적이지 않다.
+### OpenAICompatibleRefiner
 
-- `FoundationModelsRefiner` — `LanguageModelSession(instructions:)` 생성 후
-  `respond(to:options:) async throws -> Response<String>` 호출.
-  `GenerationOptions(temperature:maximumResponseTokens:)`로 결정성을 높인다.
-  가용성은 `SystemLanguageModel.default.isAvailable`로 판단한다.
-- `OllamaRefiner` — `http://localhost:11434`에 HTTP 요청. 가용성은 해당 엔드포인트
-  응답 여부로 판단한다.
+구현체는 하나다. 백엔드는 설정으로 갈아끼운다.
 
-`refine`이 throw하면 Coordinator가 원본 전사 텍스트로 폴백한다.
-
-### 다듬기 지시문
-
-```
-받아쓰기 원문을 다듬어라.
-내용을 추가하거나 삭제하거나 요약하지 마라.
-필러("음", "어", "그")를 제거하고, 말하다 스스로 고친 부분은 최종 의도만 남기고,
-문장부호와 띄어쓰기를 정리하라.
-원문의 언어를 유지하라.
-다듬은 문장만 출력하고 설명을 붙이지 마라.
+```swift
+struct OpenAICompatibleRefiner: TextRefiner {
+    let baseURL: URL      // 예: http://127.0.0.1:8081/v1
+    let model: String     // 예: gemma-4-e2b-it-8bit
+    let apiKey: String?
+    let timeout: Duration
+}
 ```
 
-3B 모델의 지배적 실패 모드는 요약과 환각이다. 지시문을 좁게 유지하는 이유다.
+`POST {baseURL}/chat/completions`에 OpenAI 형식으로 보낸다. oMLX, Ollama,
+LM Studio가 모두 같은 형식을 쓰므로 구현체를 늘리지 않고 `baseURL`과 `model`만
+바꾸면 된다. 두 서버에서 `/v1/models` 응답을 확인했다.
 
-출력 길이 검증 같은 방어 로직은 MVP에 넣지 않는다. 그 실패가 실제로 나는지 먼저
-관찰하고, 나면 그때 넣는다.
+가용성은 `GET {baseURL}/models`가 응답하는지로 판단한다.
+
+`refine`이 throw하거나 타임아웃하면 Coordinator가 원본 전사 텍스트로 폴백한다.
+
+### 요청 형식
+
+`temperature: 0.0`으로 고정한다. 같은 말에 같은 결과가 나와야 한다.
+
+**시스템 프롬프트 끝에는 매 요청 고유한 nonce를 붙인다.** 3절에서 확인한 oMLX
+캐시 결함 때문이다. 붙이지 않으면 이전 요청의 응답이 그대로 돌아올 수 있고,
+받아쓰기 앱에서 그것은 말하지 않은 문장이 삽입된다는 뜻이다.
+
+### 다듬기 프롬프트
+
+규칙 넷과 few-shot 예시 넷으로 구성한다. 이 구성으로 긴 샘플 두 건이 만점을
+받았고, 예시를 줄이면 자기 수정 처리가 무너지는 것을 측정으로 확인했다.
+
+```
+받아쓰기 원문을 다듬는다.
+규칙 1 (정정): 화자가 말하다 스스로 고치면(아니, 아니다, 아 등) 고치기 직전의
+서술 전체를 버리고 고친 뒤의 서술만 남긴다. 정정 표시어도 지운다. 문장이 길어도
+똑같이 적용한다.
+규칙 2 (필러): 어, 음, 그, 그 뭐지 같은 군말을 지운다.
+규칙 3 (형식): 문장부호와 띄어쓰기를 정리한다.
+규칙 4 (보존): 정정되지 않은 내용은 하나도 빠뜨리지 않는다.
+다듬은 문장만 출력한다.
+```
+
+few-shot 예시는 user/assistant 턴 쌍으로 넣는다. 네 쌍 모두 필요하다.
+
+| # | 보여주는 것 |
+| --- | --- |
+| 1 | 짧은 문장의 정정 |
+| 2 | 필러만 있는 경우 |
+| 3 | 여러 절이 이어진 긴 문장 끝의 정정 — 앞 절을 통째로 버린다 |
+| 4 | 문장 일부만 정정되고 나머지는 보존되는 경우 |
+
+3번과 4번이 없으면 모델은 짧은 문장만 편집하거나, 정정 시 앞부분 내용을 통째로
+날린다. 둘 다 측정에서 관찰했다.
+
+`RefinementPrompt.swift`가 규칙과 예시를 소유하고, 메시지 배열을 만들어 준다.
+프롬프트가 코드에 흩어지지 않게 한 곳에 모은다.
+
+### 알려진 한계
+
+- 20초를 넘으면 다듬기 지연이 눈에 띄게 늘어난다(30초에 5.4초).
+- 전사기가 단어를 누락하면 다듬기는 복구하지 못한다. 없는 정보는 만들 수 없다.
+
+출력 길이 검증 같은 방어 로직은 MVP에 넣지 않는다. 규칙 4와 예시 3·4로 내용
+소실이 잡히는 것을 확인했으므로, 실제로 재발하면 그때 넣는다.
 
 ## 7. 상태 기계
 
@@ -210,6 +301,7 @@ HotkeyMonitor ──TriggerEvent──▶ Coordinator ──reduce──▶ Effe
                                       │ finalizeAndFinishThroughEndOfInput()
                                       ▼  results 소진 → String
                      TextRefiner.refine(raw) ──throw/타임아웃──▶ raw 그대로
+                       (OpenAI 호환 /v1/chat/completions, 2.0~5.4초)
                                       ▼
                      TextInserter (클립보드 백업 → ⌘V → 복원)
                                       ▼
@@ -233,6 +325,10 @@ MVP에 실시간 미리보기가 없으므로 `volatileResults`가 필요 없다
 
 녹음 종료 시 스트림을 닫고 `finalizeAndFinishThroughEndOfInput()`을 호출한 뒤
 `transcriber.results`를 소진하며 텍스트를 이어붙인다.
+
+전사는 말하는 동안 진행되므로 녹음이 끝난 시점에는 사실상 완료돼 있다. 체감
+지연은 다듬기 시간이 전부다. 다듬기를 오디오까지 맡기는 안(gemma4 오디오 직결)을
+버린 이유가 여기 있다 — 그 경우 전사 시간이 말이 끝난 뒤로 옮겨 온다.
 
 ### 삽입
 
@@ -312,12 +408,23 @@ func rms(_ samples: UnsafeBufferPointer<Float>) -> Float
 
 | 실패 | 대응 |
 | --- | --- |
-| Foundation Models 사용 불가 | `isAvailable` 확인 후 Ollama로 폴백 |
-| 두 백엔드 모두 불가 | 다듬기를 건너뛰고 원본 전사를 삽입 |
-| `refine` throw 또는 5초 타임아웃 | 원본 전사를 삽입 |
+| 다듬기 서버 미가동 | `GET /v1/models` 확인 후 다듬기를 건너뛰고 **원본 전사를 삽입** |
+| `refine` throw 또는 타임아웃 | 원본 전사를 삽입 |
 | 마이크 권한 없음 | 메뉴바에서 시스템 설정 열기 안내 |
 | 손쉬운 사용 권한 없음 | 시작 시 `AXIsProcessTrustedWithOptions`로 확인, 안내 |
 | 전사 결과가 빈 문자열 | 아무 동작도 하지 않는다 (빈 붙여넣기 방지) |
+
+### 타임아웃
+
+고정 5초는 쓰지 않는다. 30초 발화의 다듬기가 5.4초 걸리는 것을 측정했으므로 고정
+5초는 긴 발화를 항상 폴백시킨다.
+
+```
+timeout = 3초 + 녹음 길이 × 0.3
+```
+
+30초 발화면 12초, 5초 발화면 4.5초다. 실측(30초→5.4초, 5초→1.0초)에 두 배 남짓의
+여유를 둔 값이다.
 
 원칙: 다듬기 실패가 받아쓰기를 죽이지 않는다. LLM은 품질 향상 레이어이지 필수
 경로가 아니다.
@@ -343,6 +450,9 @@ func rms(_ samples: UnsafeBufferPointer<Float>) -> Float
 - `AudioLevel.rms` — 무음, 최대 진폭, 빈 버퍼를 검증한다. 순수 함수다.
 - `TextRefiner` 폴백 — 항상 throw하는 스텁으로 Coordinator가 원본을 삽입하는지
   검증한다.
+- `RefinementPrompt` — 만들어진 메시지 배열이 규칙 4개와 few-shot 4쌍을 담고,
+  시스템 프롬프트 끝의 nonce가 호출마다 달라지는지 검증한다. nonce가 고정되면
+  3절의 캐시 결함으로 엉뚱한 문장이 삽입되므로 회귀 테스트 가치가 있다.
 
 오디오 캡처, 전역 키 이벤트, 텍스트 삽입, 오버레이 포커스 동작은 시스템 권한과
 실제 하드웨어에 의존해 수동으로 검증한다. 자동화 비용이 얻는 신뢰보다 크다.
@@ -361,10 +471,13 @@ func rms(_ samples: UnsafeBufferPointer<Float>) -> Float
 3. `DictationState.reduce` — 테스트 먼저, 그다음 구현.
 4. `AudioCapture` + `AudioLevel` + `Transcriber` — 녹음한 한국어가 문자열로
    나오는 데까지. RMS는 테스트 먼저.
-5. `TextRefiner` 두 구현체와 폴백 경로. 실제 한국어 구어체 전사를 넣어 6절
-   지시문이 요약과 환각을 막는지 확인한다(가설 3). 막지 못하면 방어 로직을
-   여기서 추가한다.
-6. `Coordinator` 배선 + `MenuBarApp` 상태 아이콘 + `OverlayPanel`.
-7. `Scripts/bundle.sh`와 권한 요청 흐름.
+5. `RefinementPrompt` + `OpenAICompatibleRefiner` + 폴백 경로. 프롬프트 구성은
+   6절에 확정돼 있으므로 새로 탐색하지 않는다.
+6. **육성 검증**(가설 3) — 지금까지의 측정은 전부 TTS 음성이다. 실제로 말해 보고
+   전사와 다듬기가 같은 품질을 내는지 확인한다. 무너지면 여기서 방향을 다시
+   잡는다. 앞선 단계로 이미 녹음·전사·다듬기가 이어져 있으므로 추가 도구가 필요
+   없다.
+7. `Coordinator` 배선 + `MenuBarApp` 상태 아이콘 + `OverlayPanel`.
+8. `Scripts/bundle.sh`와 권한 요청 흐름.
 
 1번과 2번의 산출물은 버리는 코드다. 확인이 끝나면 결론만 남기고 폐기한다.
