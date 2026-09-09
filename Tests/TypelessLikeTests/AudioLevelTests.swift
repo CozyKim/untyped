@@ -31,3 +31,14 @@ import Testing
     let mid = meterLevel(0.1)
     #expect(mid > 0 && mid < 1)
 }
+
+@Test func meterLevelFollowsDecibelCurve() {
+    let value = meterLevel(0.1)
+    let expected: Float = 0.6667
+    #expect(abs(value - expected) < 0.001)
+}
+
+@Test func meterLevelRespectsFloorBoundary() {
+    let value = meterLevel(0.001)
+    #expect(abs(value - 0) < 0.001)
+}
