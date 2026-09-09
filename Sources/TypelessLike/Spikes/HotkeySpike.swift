@@ -43,9 +43,13 @@ enum HotkeySpike {
 
         appendLog("[HotkeySpike] 감시 시작")
 
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
-            MainActor.assumeIsolated {
-                handleFlagsEvent(event)
+        // App.init() 중에 전역 이벤트 모니터를 설치하면 메뉴바 항목이 실제 마우스 클릭을 받지 못하므로,
+        // 앱 실행이 완료된 후에 설치한다.
+        DispatchQueue.main.async {
+            monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+                MainActor.assumeIsolated {
+                    handleFlagsEvent(event)
+                }
             }
         }
     }

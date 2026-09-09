@@ -1502,6 +1502,15 @@ final class HotkeyMonitor {
 
     func start() {
         guard monitor == nil else { return }
+        // 전역 모니터를 앱 런치가 끝나기 전에 설치하면 MenuBarExtra 상태 아이템이
+        // 실제 마우스 클릭을 받지 못한다. 접근성 경로로는 열리므로 증상이 앱 정상처럼
+        // 보이지만 사용자는 아이콘을 눌러도 아무 반응을 얻지 못한다.
+        DispatchQueue.main.async {
+            self.installMonitor()
+        }
+    }
+
+    private func installMonitor() {
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self, event.keyCode == Self.rightOptionKeyCode else { return }
             let down = event.modifierFlags.contains(.option)
@@ -1522,12 +1531,30 @@ final class HotkeyMonitor {
 }
 ```
 
+`addLocalMonitorForEvents`로 바꾸지 않는다. 로컬 모니터는 이 앱에 전달된 이벤트만
+보는데, 다른 앱이 전면일 때 수식키를 관찰하는 것이 이 클래스의 존재 이유다.
+
 - [ ] **Step 2: 빌드 확인**
 
 Run: `swift build`
 Expected: `Build complete!`
 
-- [ ] **Step 3: 커밋**
+- [ ] **Step 3: 마우스 클릭이 살아 있는지 확인**
+
+전역 모니터 설치 시점이 잘못되면 메뉴바 아이콘이 마우스 클릭을 받지 못한다.
+접근성 경로로는 열리므로 이 확인은 실제 포인터 이벤트로 해야 한다.
+
+`osascript`의 `click at`은 접근성 액션으로 처리되어 두 경로를 구분하지 못한다.
+`/tmp`에 `CGEvent` 마우스 다운/업을 아이콘 좌표에 게시하는 작은 프로그램을 만들어
+확인한다. 좌표는 다음으로 얻는다.
+
+```bash
+osascript -e 'tell application "System Events" to tell process "TypelessLike" to get {position, size} of menu bar item 1 of menu bar 2'
+```
+
+Expected: 실제 클릭으로 메뉴가 열린다.
+
+- [ ] **Step 4: 커밋**
 
 ```bash
 git add Sources/TypelessLike/Input/HotkeyMonitor.swift
