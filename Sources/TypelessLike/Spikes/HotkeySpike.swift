@@ -81,7 +81,9 @@ enum HotkeySpike {
     private static func appendLog(_ line: String) {
         let lineWithNewline = line + "\n"
         if let data = lineWithNewline.data(using: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
+            if !FileManager.default.fileExists(atPath: logPath) {
+                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
+            }
             if let handle = FileHandle(forWritingAtPath: logPath) {
                 handle.seekToEndOfFile()
                 handle.write(data)
