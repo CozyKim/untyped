@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import SwiftUI
 
 @main
@@ -17,7 +18,7 @@ struct MenuBarApp: App {
                 Task {
                     let format = try await Transcriber.targetAudioFormat()
                     let capture = AudioCapture(targetFormat: format) { level in
-                        // 레벨은 Task 11에서 오버레이에 연결한다. 지금은 확인용으로만 찍는다.
+                        // 오디오 레벨을 로깅하여 마이크 동작 여부를 확인한다.
                         if level > 0.05 {
                             appendTranscriptLog("[level] \(String(format: "%.3f", level))")
                         }
@@ -38,16 +39,28 @@ struct MenuBarApp: App {
 }
 
 private func appendTranscriptLog(_ line: String) {
-    let logPath = "/tmp/typeless-transcribe.log"
-    let lineWithNewline = line + "\n"
-    if let data = lineWithNewline.data(using: .utf8) {
-        if !FileManager.default.fileExists(atPath: logPath) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
+    guard let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+        return
+    }
+    let typelesLogDir = logsDir.appendingPathComponent("Logs/TypelessLike", isDirectory: true)
+    let logFile = typelesLogDir.appendingPathComponent("transcribe.log", isDirectory: false)
+
+    do {
+        try FileManager.default.createDirectory(at: typelesLogDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+
+        let lineWithNewline = line + "\n"
+        guard let data = lineWithNewline.data(using: .utf8) else { return }
+
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = FileHandle(forWritingAtPath: logFile.path) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            try data.write(to: logFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path)
         }
-        if let handle = FileHandle(forWritingAtPath: logPath) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            handle.closeFile()
-        }
+    } catch {
     }
 }

@@ -12,7 +12,12 @@ enum HotkeySpike {
     private static var isDown = false
 
     @MainActor
-    private static let logPath = "/tmp/typeless-hotkey-spike.log"
+    private static var logPath: String {
+        guard let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+            return ""
+        }
+        return logsDir.appendingPathComponent("Logs/TypelessLike/hotkey-spike.log", isDirectory: false).path
+    }
 
     @MainActor
     private static var trustCheckTimer: Timer?
@@ -22,7 +27,11 @@ enum HotkeySpike {
     @MainActor
     static func start() {
         do {
-            try "".write(toFile: logPath, atomically: true, encoding: .utf8)
+            guard let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+                return
+            }
+            let typelesLogDir = logsDir.appendingPathComponent("Logs/TypelessLike", isDirectory: true)
+            try FileManager.default.createDirectory(at: typelesLogDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         } catch {
         }
 
@@ -80,15 +89,16 @@ enum HotkeySpike {
     @MainActor
     private static func appendLog(_ line: String) {
         let lineWithNewline = line + "\n"
-        if let data = lineWithNewline.data(using: .utf8) {
-            if !FileManager.default.fileExists(atPath: logPath) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            }
+        guard let data = lineWithNewline.data(using: .utf8) else { return }
+
+        if FileManager.default.fileExists(atPath: logPath) {
             if let handle = FileHandle(forWritingAtPath: logPath) {
                 handle.seekToEndOfFile()
                 handle.write(data)
                 handle.closeFile()
             }
+        } else {
+            FileManager.default.createFile(atPath: logPath, contents: data, attributes: [.posixPermissions: 0o600])
         }
     }
 }
