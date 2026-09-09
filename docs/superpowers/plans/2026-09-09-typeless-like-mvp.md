@@ -1500,17 +1500,30 @@ final class HotkeyMonitor {
         self.onEvent = onEvent
     }
 
+    /// 전역 모니터를 앱 런치가 끝나기 전에 설치하면 MenuBarExtra 상태 아이템이
+    /// 실제 마우스 클릭을 받지 못한다. 접근성 경로로는 열리므로 앱이 정상처럼 보이지만
+    /// 사용자는 아이콘을 눌러도 아무 반응을 얻지 못한다.
     func start() {
-        guard monitor == nil else { return }
-        // 전역 모니터를 앱 런치가 끝나기 전에 설치하면 MenuBarExtra 상태 아이템이
-        // 실제 마우스 클릭을 받지 못한다. 접근성 경로로는 열리므로 증상이 앱 정상처럼
-        // 보이지만 사용자는 아이콘을 눌러도 아무 반응을 얻지 못한다.
-        DispatchQueue.main.async {
-            self.installMonitor()
+        wantsMonitor = true
+        if NSApplication.shared.isRunning {
+            installMonitor()
+            return
+        }
+        // 아직 런치 중이면 완료 알림을 기다린다. 메인 큐로 한 번 미루는 것만으로는
+        // 상태 아이템 생성 이후라는 보장이 없다.
+        launchObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.installMonitor() }
         }
     }
 
     private func installMonitor() {
+        // start() 이후 stop()이 먼저 실행됐거나 이미 설치돼 있으면 설치하지 않는다.
+        // 설치가 비동기로 밀리기 때문에 이 확인이 설치 직전에 있어야 한다.
+        guard wantsMonitor, monitor == nil else { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self, event.keyCode == Self.rightOptionKeyCode else { return }
             let down = event.modifierFlags.contains(.option)
@@ -1524,12 +1537,26 @@ final class HotkeyMonitor {
     }
 
     func stop() {
+        wantsMonitor = false
+        if let launchObserver {
+            NotificationCenter.default.removeObserver(launchObserver)
+        }
+        launchObserver = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         isDown = false
     }
 }
 ```
+
+프로퍼티에 `private var wantsMonitor = false`와 `private var launchObserver: (any NSObjectProtocol)?`를
+추가한다.
+
+`wantsMonitor`가 필요한 이유는 설치가 비동기로 밀리기 때문이다. `start()` 시점에
+`monitor == nil`만 확인하면, 같은 턴에 `start()`를 두 번 부를 때 둘 다 통과해 모니터가
+두 개 설치되고 `stop()`은 마지막 것만 제거한다. `start()` 직후 `stop()`을 부르면
+`stop()`은 아직 `nil`인 모니터를 보고 아무것도 제거하지 않는데, 뒤늦게 실행된 설치가
+제거할 방법이 없는 전역 모니터를 남긴다.
 
 `addLocalMonitorForEvents`로 바꾸지 않는다. 로컬 모니터는 이 앱에 전달된 이벤트만
 보는데, 다른 앱이 전면일 때 수식키를 관찰하는 것이 이 클래스의 존재 이유다.
