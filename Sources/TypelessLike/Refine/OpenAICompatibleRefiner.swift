@@ -18,6 +18,7 @@ struct OpenAICompatibleRefiner: TextRefiner {
         struct Choice: Decodable {
             struct Message: Decodable { let content: String }
             let message: Message
+            let finish_reason: String?
         }
         let choices: [Choice]
     }
@@ -42,7 +43,7 @@ struct OpenAICompatibleRefiner: TextRefiner {
         if let apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        // temperature 0으로 고정한다. 같은 말에 같은 결과가 나와야 한다.
+        // temperature 0으로 고정한다. 프롬프트가 정해지면 모델의 출력 변동이 없다.
         request.httpBody = try JSONEncoder().encode(
             Request(model: model, messages: RefinementPrompt.messages(for: raw),
                     temperature: 0, max_tokens: 900)
@@ -52,14 +53,18 @@ struct OpenAICompatibleRefiner: TextRefiner {
             throw RefinerError.badStatus
         }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        guard let content = decoded.choices.first?.message.content else {
+        guard let choice = decoded.choices.first else {
             throw RefinerError.emptyResponse
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if choice.finish_reason == "length" {
+            throw RefinerError.truncated
+        }
+        return choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
 enum RefinerError: Error {
     case badStatus
     case emptyResponse
+    case truncated
 }

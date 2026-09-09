@@ -29,7 +29,9 @@ func refineOrFallback(
         }
         let first = await group.next() ?? nil
         group.cancelAll()
-        guard let first, !first.isEmpty else { return raw }
-        return first
+        guard let first else { return raw }
+        let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return raw }
+        return trimmed
     }
 }
