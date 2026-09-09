@@ -1263,8 +1263,8 @@ import ApplicationServices
 
 /// 완성된 문자열만 받는다. 전사도 다듬기도 모른다.
 enum TextInserter {
-    /// Task 2에서 TextEdit, 브라우저 주소창, 메모 앱으로 실측한 값.
-    /// 너무 짧으면 붙여넣기가 복원된 옛 내용을 집어간다.
+    /// 붙여넣기가 클립보드를 읽기 전에 복원하면 옛 내용이 들어간다.
+    /// 여러 앱에서 실측해 실패하지 않은 가장 작은 값이다.
     static let restoreDelay: Duration = .milliseconds(150)
 
     static var hasAccessibilityPermission: Bool {
