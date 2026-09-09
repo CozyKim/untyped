@@ -2,3 +2,4 @@
 .worktrees/
 *.app
 .DS_Store
+build/
