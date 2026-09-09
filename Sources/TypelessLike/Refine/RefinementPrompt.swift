@@ -9,7 +9,7 @@ enum RefinementPrompt {
     /// 음차된 용어를 되돌릴 후보 집합. 음차와 영문의 대응을 주지 않는다.
     /// 대응을 병기한 판은 점수가 같으면서 길이만 늘어 희석을 키운다.
     /// 항목을 늘릴 때는 회귀 스위트로 확인한다.
-    static let glossary = """
+    private static let glossary = """
     PR, approve, review, merge, main, branch, commit, rebase, push, pull, revert, \
     deploy, staging, production, rollback, endpoint, timeout, retry, logic, log, debug, error, \
     authentication, authorization, token, refactoring, dependency, injection, container, restart, \
@@ -61,6 +61,10 @@ enum RefinementPrompt {
     ]
 
     static func messages(for raw: String) -> [ChatMessage] {
+        // 서버의 프롬프트 캐시는 텍스트 prefix로 key를 만든다. nonce가 고정되면
+        // 이전 요청의 응답을 돌려주게 되는데, 받아쓰기 앱에서는 사용자가 말하지
+        // 않은 문장이 삽입되는 결과가 된다. 따라서 매 요청마다 다른 nonce를
+        // 생성해야 한다.
         var messages = [ChatMessage(role: "system", content: rules(nonce: UUID().uuidString.prefix(8).lowercased()))]
         for (input, output) in fewShots {
             messages.append(ChatMessage(role: "user", content: input))
