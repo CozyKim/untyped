@@ -22,6 +22,14 @@ private struct EchoRefiner: TextRefiner {
     func refine(_ raw: String) async throws -> String { "다듬음: " + raw }
 }
 
+private struct SlowButReturningRefiner: TextRefiner {
+    var isAvailable: Bool { get async { true } }
+    func refine(_ raw: String) async throws -> String {
+        try await Task.sleep(for: .milliseconds(100))
+        return "다듬음: " + raw
+    }
+}
+
 @Test func throwingRefinerFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: ThrowingRefiner(), timeout: .seconds(5))
     #expect(out == "원본 전사")
@@ -39,6 +47,11 @@ private struct EchoRefiner: TextRefiner {
 
 @Test func workingRefinerResultIsUsed() async {
     let out = await refineOrFallback("원본 전사", using: EchoRefiner(), timeout: .seconds(5))
+    #expect(out == "다듬음: 원본 전사")
+}
+
+@Test func realisticRefinerWithComfortableTimeoutSucceeds() async {
+    let out = await refineOrFallback("원본 전사", using: SlowButReturningRefiner(), timeout: .seconds(5))
     #expect(out == "다듬음: 원본 전사")
 }
 
