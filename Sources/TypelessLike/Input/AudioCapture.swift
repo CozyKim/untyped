@@ -2,11 +2,6 @@
 import Foundation
 import Speech
 
-/// 마이크로부터 캡처한 버퍼를 전사기가 요구하는 포맷으로 변환하고 흘린다.
-struct AnalyzerInput {
-    let buffer: AVAudioPCMBuffer
-}
-
 /// 마이크를 열어 전사기가 요구하는 포맷으로 변환한 버퍼를 흘린다.
 /// 목표 포맷은 호출자가 정한다. 마이크 네이티브 포맷을 추측하지 않는다.
 actor AudioCapture {
@@ -40,8 +35,7 @@ actor AudioCapture {
         let level = onLevel
         let outputFormat = converter.outputFormat
 
-        // The tap callback captures converter (not Sendable) safely because it runs on the
-        // audio thread only, and AVAudioEngine serializes all accesses through the callback.
+        // 탭 콜백은 오디오 스레드에서만 실행되고 AVAudioEngine이 모든 접근을 직렬화한다.
         input.installTap(onBus: 0, bufferSize: 4096, format: source) { buffer, _ in
             if let channel = buffer.floatChannelData?[0] {
                 let value = rms(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
@@ -49,14 +43,16 @@ actor AudioCapture {
             }
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
             guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-            var consumed = false
+            // convert() 호출 내에서만 동기적으로 한 번 또는 두 번 호출되고 동일 스레드에서만 접근됨
+            class ConsumedFlag: @unchecked Sendable { var value = false }
+            let consumed = ConsumedFlag()
             var error: NSError?
             converter.convert(to: out, error: &error) { _, status in
-                if consumed {
+                if consumed.value {
                     status.pointee = .noDataNow
                     return nil
                 }
-                consumed = true
+                consumed.value = true
                 status.pointee = .haveData
                 return buffer
             }
