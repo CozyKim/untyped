@@ -3,6 +3,10 @@ import SwiftUI
 
 @main
 struct MenuBarApp: App {
+    init() {
+        HotkeySpike.start()
+    }
+
     var body: some Scene {
         MenuBarExtra("TypelessLike", systemImage: "mic") {
             Button("스파이크 50ms") { InsertionSpike.run(restoreDelayMs: 50) }
