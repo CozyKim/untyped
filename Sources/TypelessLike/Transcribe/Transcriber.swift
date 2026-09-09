@@ -24,6 +24,11 @@ actor Transcriber {
     }
 
     func begin(inputSequence: AsyncStream<AnalyzerInput>) async throws {
+        // 이전 세션이 진행 중이면 정리한다. 새 세션 시작 시 이전 상태를 명시적으로 취소한다.
+        if let previousCollector = collector {
+            previousCollector.cancel()
+        }
+
         // MVP에 실시간 미리보기가 없으므로 volatileResults가 필요 없다.
         // 미리보기를 넣을 때 .progressiveTranscription 계열로 교체한다.
         let module = SpeechTranscriber(locale: locale, preset: .transcription)
@@ -44,11 +49,16 @@ actor Transcriber {
     /// 입력 스트림이 닫힌 뒤 호출한다. 남은 결과를 마무리하고 전체 텍스트를 돌려준다.
     func finish() async throws -> String {
         guard let analyzer, let collector else { return "" }
+        defer {
+            // 오류 발생 시에도 정리가 실행되도록 함.
+            // 핸들을 버리는 것만으로는 Task가 취소되지 않으므로 명시적으로 취소해야 한다.
+            collector.cancel()
+            self.analyzer = nil
+            self.transcriber = nil
+            self.collector = nil
+        }
         try await analyzer.finalizeAndFinishThroughEndOfInput()
         let text = try await collector.value
-        self.analyzer = nil
-        self.transcriber = nil
-        self.collector = nil
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
