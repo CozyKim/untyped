@@ -55,17 +55,16 @@ actor Transcriber {
     /// 입력 스트림이 닫힌 뒤 호출한다. 남은 결과를 마무리하고 전체 텍스트를 돌려준다.
     func finish() async throws -> String {
         guard let analyzer, let collector else { return "" }
-        let sessionAnalyzer = analyzer
 
         do {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
             let text = try await collector.value
             // 정상 경로: 현재 세션을 정리하고 텍스트를 반환한다.
-            await teardown(for: sessionAnalyzer)
+            await teardown(for: analyzer)
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             // 오류 경로: 현재 세션을 정리하고 오류를 재발생한다.
-            await teardown(for: sessionAnalyzer)
+            await teardown(for: analyzer)
             throw error
         }
     }
@@ -74,16 +73,19 @@ actor Transcriber {
         // 현재 세션이 이것과 같을 경우만 정리한다. re-entry 중에는 새 세션이 이미 설정되어 있을 수 있다.
         guard analyzer === session else { return }
 
-        if let collector {
-            // 핸들을 버리는 것만으로는 Task가 취소되지 않으므로 명시적으로 취소해야 한다.
-            collector.cancel()
-        }
-        // Analyzer는 자신의 분석 작업으로 인해 자기 자신을 retain하고 있다.
-        // 분석을 시작했으면 드롭만으로는 deallocate되지 않으므로 명시적으로 정리해야 한다.
-        await session.cancelAndFinishNow()
+        // 핸들을 버리는 것만으로는 Task가 취소되지 않으므로 명시적으로 취소해야 한다.
+        collector?.cancel()
+
+        // await 전에 프로퍼티를 nil하여 stale 쓰기 경쟁을 방지한다.
+        // session 로컬이 강한 참조를 유지하므로 await 중에도 session은 유효하다.
+        // 이 순서로 진행하면 identity 체크 후 await 전까지 다른 재진입이 상태를 변경할 수 없다.
         self.analyzer = nil
         self.transcriber = nil
         self.collector = nil
+
+        // Analyzer는 자신의 분석 작업으로 인해 자기 자신을 retain하고 있다.
+        // 분석을 시작했으면 드롭만으로는 deallocate되지 않으므로 명시적으로 정리해야 한다.
+        await session.cancelAndFinishNow()
     }
 }
 
