@@ -8,27 +8,32 @@ import Testing
     let text = system?.content ?? ""
 
     // 1-4 규칙이 line-leading 번호로 정확히 존재하는지 확인한다.
-    // 이 방식은 "5)", 전각 문자, 또는 rule 4에 반영되는 경우 등
+    // 이 방식은 "5)", 전각 문자, rule 4에 반영되는 경우, 중복된 규칙 등
     // 다양한 회귀를 감지한다.
     let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     var ruleNumbers = [String]()
     for line in lines {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if (trimmed.hasPrefix("1.") || trimmed.hasPrefix("1)")) && !ruleNumbers.contains("1") {
+        if trimmed.hasPrefix("1.") || trimmed.hasPrefix("1)") {
             ruleNumbers.append("1")
-        } else if (trimmed.hasPrefix("2.") || trimmed.hasPrefix("2)")) && !ruleNumbers.contains("2") {
+        } else if trimmed.hasPrefix("2.") || trimmed.hasPrefix("2)") {
             ruleNumbers.append("2")
-        } else if (trimmed.hasPrefix("3.") || trimmed.hasPrefix("3)")) && !ruleNumbers.contains("3") {
+        } else if trimmed.hasPrefix("3.") || trimmed.hasPrefix("3)") {
             ruleNumbers.append("3")
-        } else if (trimmed.hasPrefix("4.") || trimmed.hasPrefix("4)")) && !ruleNumbers.contains("4") {
+        } else if trimmed.hasPrefix("4.") || trimmed.hasPrefix("4)") {
             ruleNumbers.append("4")
+        } else if trimmed.hasPrefix("5.") || trimmed.hasPrefix("5)") ||
+                  trimmed.hasPrefix("6.") || trimmed.hasPrefix("6)") ||
+                  trimmed.hasPrefix("7.") || trimmed.hasPrefix("7)") ||
+                  trimmed.hasPrefix("8.") || trimmed.hasPrefix("8)") ||
+                  trimmed.hasPrefix("9.") || trimmed.hasPrefix("9)") {
+            // 규칙이 4개를 초과하면 별도로 기록해서 테스트 실패를 유도
+            ruleNumbers.append("?")
         }
     }
 
-    // 규칙 번호 직접 검사: 각 규칙이 한 번씩 정확히 나타나는지 확인
-    for marker in ["1.", "2.", "3.", "4."] {
-        #expect(text.contains(marker))
-    }
+    // 규칙이 정확히 1, 2, 3, 4 순서로 한 번씩만 나타나는지 확인
+    #expect(ruleNumbers == ["1", "2", "3", "4"])
 
     // Semantic dilution (rule 4에 반영되거나 번호 없이 추가됨)은
     // 단위 테스트로는 감지할 수 없으며 회귀 스위트에서 다룬다.
