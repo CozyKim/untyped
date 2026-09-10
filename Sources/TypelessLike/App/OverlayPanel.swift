@@ -20,8 +20,9 @@ final class OverlayController {
 
     func show(status: OverlayStatus) {
         model.status = status
+        model.level = 0
         if panel == nil { panel = makePanel() }
-        positionAtBottomCenter()
+        guard positionAtBottomCenter() else { return }
         panel?.orderFrontRegardless()
     }
 
@@ -30,6 +31,7 @@ final class OverlayController {
     }
 
     func hide() {
+        model.level = 0
         panel?.orderOut(nil)
     }
 
@@ -46,19 +48,33 @@ final class OverlayController {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
         panel.contentView = NSHostingView(rootView: OverlayView(model: model))
         return panel
     }
 
-    private func positionAtBottomCenter() {
-        guard let panel, let screen = NSScreen.main else { return }
+    private func positionAtBottomCenter() -> Bool {
+        guard let panel else { return false }
+
+        // 마우스 위치의 화면을 선택한다. NSScreen.main은 "키 윈도우가 있는 화면"을
+        // 뜻하는데, 이 앱은 키 윈도우를 가지지 않으므로 예측 불가능하다.
+        let mouseLocation = NSEvent.mouseLocation
+        let targetScreen = (NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
+                           ?? NSScreen.main
+                           ?? NSScreen.screens.first)
+        guard let screen = targetScreen else { return false }
+
         let frame = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: frame.midX - 120, y: frame.minY + 120))
+        let panelWidth = panel.frame.width
+        let xOffset = frame.midX - panelWidth / 2
+        panel.setFrameOrigin(NSPoint(x: xOffset, y: frame.minY + 120))
+        return true
     }
 }
 
+@MainActor
 @Observable
-final class OverlayModel {
+private final class OverlayModel {
     var status: OverlayStatus = .recording
     var level: Float = 0
 }
