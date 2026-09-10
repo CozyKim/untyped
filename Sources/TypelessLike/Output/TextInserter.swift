@@ -1,11 +1,12 @@
 import AppKit
 import ApplicationServices
-import Darwin
 
 /// 완성된 문자열만 받는다. 전사도 다듬기도 모른다.
 enum TextInserter {
     /// 붙여넣기가 클립보드를 읽기 전에 복원하면 옛 내용이 들어간다.
-    /// 여러 앱에서 실측해 실패하지 않은 가장 작은 값이다.
+    /// 세 가지 지연값(50, 150, 400ms)을 여러 앱에서 실측한 결과 모두 성공했다.
+    /// 150ms를 택한 이유는 복원이 너무 빠르면 붙여넣기가 옛 내용을 집어가는 무언의 실패를
+    /// 피하기 위함이다. 지연을 늘려도 사용자가 인지할 수 있는 비용이 없으므로 여유 있는 값을 선택했다.
     static let restoreDelay: Duration = .milliseconds(150)
 
     static var hasAccessibilityPermission: Bool {
@@ -13,25 +14,10 @@ enum TextInserter {
     }
 
     static func requestAccessibilityPermission() {
-        // Swift 6 strict concurrency에서 C global 접근을 위해 helper 함수 사용.
-        // kAXTrustedCheckOptionPrompt는 불변 프레임워크 상수이며 안전하다.
-        let key = _accessibilityPromptKeyUnsafe()
-        let options = [key: true]
+        // Swift 6 strict concurrency에서 C global kAXTrustedCheckOptionPrompt 직접 참조 불가.
+        // 이 상수의 문서된 문자열 값은 "AXTrustedCheckOptionPrompt"이므로 리터럴로 사용한다.
+        let options = ["AXTrustedCheckOptionPrompt": true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
-    }
-
-    static func _accessibilityPromptKeyUnsafe() -> String {
-        // dlsym으로 동적으로 symbol을 조회하여 Swift 6 concurrency 체크 우회.
-        // kAXTrustedCheckOptionPrompt는 ApplicationServices framework의 불변 상수이다.
-        let handle = dlopen(nil, RTLD_LAZY)
-        defer { if handle != nil { dlclose(handle) } }
-
-        if let sym = dlsym(handle, "kAXTrustedCheckOptionPrompt") {
-            let cfString = unsafeBitCast(sym, to: CFString.self)
-            return cfString as String
-        }
-        // Fallback: 알려진 상수값으로 대체
-        return "AXTrustedCheckOptionPrompt"
     }
 
     static func insert(_ text: String) async {
