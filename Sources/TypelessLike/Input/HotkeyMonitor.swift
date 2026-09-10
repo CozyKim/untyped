@@ -1,0 +1,80 @@
+import AppKit
+
+/// 오른쪽 Option 단독. 단독 수식키라 다른 앱의 단축키와 충돌하지 않고
+/// flagsChanged로 눌림과 뗌을 모두 받을 수 있다.
+/// Fn은 시스템이 받아쓰기와 이모지 입력에 이미 쓰고 있어 피한다.
+@MainActor
+final class HotkeyMonitor {
+    private static let rightOptionKeyCode: UInt16 = 61
+    // IOKit.framework/Headers/hidsystem/IOLLEvent.h에서 정의한 상수.
+    // modifierFlags.rawValue의 낮은 16비트에 장치 고유 수식키 비트가 있다.
+    private static let rightOptionMask: UInt = 0x40
+
+    private let onEvent: @MainActor (TriggerEvent) -> Void
+    private var monitor: Any?
+    private var isDown = false
+    private var wantsMonitor = false
+    private var hasFinishedLaunching = false
+    private var launchObserver: (any NSObjectProtocol)?
+
+    init(onEvent: @escaping @MainActor (TriggerEvent) -> Void) {
+        self.onEvent = onEvent
+    }
+
+    /// 전역 모니터를 앱 런치가 끝나기 전에 설치하면 MenuBarExtra 상태 아이템이
+    /// 실제 마우스 클릭을 받지 못한다. 접근성 경로로는 열리므로 앱이 정상처럼 보이지만
+    /// 사용자는 아이콘을 눌러도 아무 반응을 얻지 못한다.
+    func start() {
+        wantsMonitor = true
+        if hasFinishedLaunching {
+            installMonitor()
+            return
+        }
+        // 런치가 완료될 때까지 기다린다.
+        guard launchObserver == nil else { return }
+        launchObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishLaunchObserved() }
+        }
+    }
+
+    private func finishLaunchObserved() {
+        hasFinishedLaunching = true
+        if let launchObserver {
+            NotificationCenter.default.removeObserver(launchObserver)
+        }
+        launchObserver = nil
+        installMonitor()
+    }
+
+    private func installMonitor() {
+        // start() 이후 stop()이 먼저 실행됐거나 이미 설치돼 있으면 설치하지 않는다.
+        // 설치가 비동기로 밀리기 때문에 이 확인이 설치 직전에 있어야 한다.
+        guard wantsMonitor, monitor == nil else { return }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self, event.keyCode == Self.rightOptionKeyCode else { return }
+            // modifierFlags.contains(.option)은 왼쪽 Option이 눌려도 true가 되어,
+            // 오른쪽 Option을 놓으면서 왼쪽 Option이 눌려 있으면 뗌을 감지하지 못한다.
+            // 장치 고유 마스크로 오른쪽 Option만 검사한다.
+            let down = event.modifierFlags.rawValue & Self.rightOptionMask != 0
+            // flagsChanged는 같은 상태를 연달아 보낼 수 있다.
+            guard down != self.isDown else { return }
+            self.isDown = down
+            self.onEvent(down ? .keyDown : .keyUp)
+        }
+    }
+
+    func stop() {
+        wantsMonitor = false
+        if let launchObserver {
+            NotificationCenter.default.removeObserver(launchObserver)
+        }
+        launchObserver = nil
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        isDown = false
+    }
+}
