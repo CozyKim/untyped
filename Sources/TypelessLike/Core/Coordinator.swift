@@ -19,6 +19,10 @@ final class Coordinator {
     private var hotkey: HotkeyMonitor?
     private var capture: AudioCapture?
     private var transcriber: Transcriber?
+    /// beginCapture()를 감싼 핸들. 짧게 눌렀다 떼면 setup이 끝나기 전에
+    /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
+    /// "아직 안 끝남"을 보고 오판하지 않도록 이 핸들을 먼저 기다리게 한다.
+    private var captureSetup: Task<Void, Never>?
 
     init(refiner: (any TextRefiner)?) {
         self.refiner = refiner
@@ -49,7 +53,7 @@ final class Coordinator {
         switch effect {
         case .startCapture:
             overlay.show(status: .recording)
-            Task { await beginCapture() }
+            captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess:
             overlay.show(status: .refining)
             Task { await finishAndInsert() }
@@ -79,6 +83,12 @@ final class Coordinator {
     }
 
     private func finishAndInsert() async {
+        // 짧게 눌렀다 떼면 beginCapture()의 세 번의 await(포맷 조회, 마이크 시작,
+        // 분석기 시작)가 아직 안 끝난 채로 여기 먼저 도착할 수 있다. 기다리지
+        // 않으면 아래 가드가 capture/transcriber를 nil로 보고 "설정 실패"로
+        // 오판해 즉시 idle로 돌아가는데, beginCapture()는 뒤늦게 계속 진행되어
+        // 아무도 멈추지 않는 마이크와 SpeechAnalyzer를 남긴다.
+        await captureSetup?.value
         guard let capture, let transcriber else { reset(); return }
         let recorded = await capture.recordedDuration
         await capture.stop()
@@ -95,6 +105,7 @@ final class Coordinator {
     private func reset() {
         capture = nil
         transcriber = nil
+        captureSetup = nil
         level = 0
         overlay.hide()
         state = .idle

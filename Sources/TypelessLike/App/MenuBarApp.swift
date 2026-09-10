@@ -75,6 +75,15 @@ struct MenuBarApp: App {
     }
 
     init() {
+        // 시작 시점에 손쉬운 사용 권한이 없으면 시스템 다이얼로그를 띄운다.
+        // 이 권한이 없으면 전역 모니터가 눌림/뗌을 받아도 insert()가 조용히
+        // 아무것도 하지 않아, 사용자가 메뉴를 열어보지 않는 한 앱이 멈춘 것처럼
+        // 보인다. 반복 확인하지 않고 시작할 때 한 번만 띄운다 — 메뉴의 안내
+        // 버튼이 거부했을 때의 재시도 경로로 남는다.
+        if !PermissionStatus.accessibilityGranted {
+            TextInserter.requestAccessibilityPermission()
+        }
+
         let coordinator = coordinator
         Task { @MainActor in coordinator.start() }
     }
