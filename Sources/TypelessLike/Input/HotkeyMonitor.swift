@@ -12,6 +12,7 @@ final class HotkeyMonitor {
 
     private let onEvent: @MainActor (TriggerEvent) -> Void
     private var monitor: Any?
+    private var localMonitor: Any?
     private var isDown = false
     private var wantsMonitor = false
     private var hasFinishedLaunching = false
@@ -54,17 +55,29 @@ final class HotkeyMonitor {
         // start() 이후 stop()이 먼저 실행됐거나 이미 설치돼 있으면 설치하지 않는다.
         // 설치가 비동기로 밀리기 때문에 이 확인이 설치 직전에 있어야 한다.
         guard wantsMonitor, monitor == nil else { return }
+        // 전역 모니터는 다른 앱으로 라우팅된 이벤트만 본다. 이 앱이 눌림과 뗌 사이에
+        // 프론트로 올라오면(메뉴 열기 등) 뗌 이벤트는 이 앱으로 라우팅되어 전역
+        // 모니터에 보이지 않고, 상태 기계가 holding에 갇혀 마이크가 계속 켜진다.
+        // 로컬 모니터를 같이 달아 같은 핸들러로 흘려보낸다.
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            guard let self, event.keyCode == Self.rightOptionKeyCode else { return }
-            // modifierFlags.contains(.option)은 왼쪽 Option이 눌려도 true가 되어,
-            // 오른쪽 Option을 놓으면서 왼쪽 Option이 눌려 있으면 뗌을 감지하지 못한다.
-            // 장치 고유 마스크로 오른쪽 Option만 검사한다.
-            let down = event.modifierFlags.rawValue & Self.rightOptionMask != 0
-            // flagsChanged는 같은 상태를 연달아 보낼 수 있다.
-            guard down != self.isDown else { return }
-            self.isDown = down
-            self.onEvent(down ? .keyDown : .keyUp)
+            self?.handleFlagsChanged(event)
         }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleFlagsChanged(event)
+            return event
+        }
+    }
+
+    private func handleFlagsChanged(_ event: NSEvent) {
+        guard event.keyCode == Self.rightOptionKeyCode else { return }
+        // modifierFlags.contains(.option)은 왼쪽 Option이 눌려도 true가 되어,
+        // 오른쪽 Option을 놓으면서 왼쪽 Option이 눌려 있으면 뗌을 감지하지 못한다.
+        // 장치 고유 마스크로 오른쪽 Option만 검사한다.
+        let down = event.modifierFlags.rawValue & Self.rightOptionMask != 0
+        // flagsChanged는 같은 상태를 연달아 보낼 수 있다.
+        guard down != isDown else { return }
+        isDown = down
+        onEvent(down ? .keyDown : .keyUp)
     }
 
     func stop() {
@@ -75,6 +88,8 @@ final class HotkeyMonitor {
         launchObserver = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        localMonitor = nil
         isDown = false
     }
 }

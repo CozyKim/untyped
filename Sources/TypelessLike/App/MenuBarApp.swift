@@ -1,76 +1,65 @@
-import AppKit
-import Foundation
 import SwiftUI
+import AppKit
 
 @main
 struct MenuBarApp: App {
-    init() {
-        HotkeySpike.start()
-    }
+    @State private var coordinator = Coordinator(
+        refiner: OpenAICompatibleRefiner(
+            baseURL: URL(string: "http://127.0.0.1:8081/v1")!,
+            model: "gemma-4-e2b-it-8bit",
+            apiKey: ProcessInfo.processInfo.environment["TYPELESS_API_KEY"]
+        )
+    )
 
     var body: some Scene {
-        MenuBarExtra("TypelessLike", systemImage: "mic") {
-            Button("스파이크 50ms") { InsertionSpike.run(restoreDelayMs: 50) }
-            Button("스파이크 150ms") { InsertionSpike.run(restoreDelayMs: 150) }
-            Button("스파이크 400ms") { InsertionSpike.run(restoreDelayMs: 400) }
-            Divider()
-            Button("전사 15초") {
-                Task {
-                    appendTranscriptLog("[시작] 전사 15초")
-                    do {
-                        let format = try await Transcriber.targetAudioFormat()
-                        let capture = AudioCapture(targetFormat: format) { level in
-                            // 오디오 레벨을 로깅하여 마이크 동작 여부를 확인한다.
-                            if level > 0.05 {
-                                appendTranscriptLog("[level] \(String(format: "%.3f", level))")
-                            }
+        MenuBarExtra {
+            if !PermissionStatus.microphoneGranted {
+                Button("마이크 권한 허용하기…") {
+                    Task {
+                        await PermissionStatus.requestMicrophone()
+                        if !PermissionStatus.microphoneGranted {
+                            PermissionStatus.openMicrophoneSettings()
                         }
-                        let transcriber = Transcriber()
-                        let stream = try await capture.start()
-                        try await transcriber.begin(inputSequence: stream)
-                        try await Task.sleep(for: .seconds(15))
-                        await capture.stop()
-                        let text = try await transcriber.finish()
-                        appendTranscriptLog("[전사] \(text)")
-                    } catch {
-                        let errorMsg = String(describing: error)
-                        appendTranscriptLog("[오류] 전사 실패: \(errorMsg)")
                     }
                 }
             }
+            if !PermissionStatus.accessibilityGranted {
+                Button("손쉬운 사용 권한 허용하기…") {
+                    TextInserter.requestAccessibilityPermission()
+                    PermissionStatus.openAccessibilitySettings()
+                }
+            }
+            if !PermissionStatus.microphoneGranted || !PermissionStatus.accessibilityGranted {
+                Divider()
+            }
+            Text(statusLabel)
             Divider()
             Button("종료") { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(systemName: iconName)
+        }
+        .onChange(of: coordinator.state) { _, _ in }
+        .commands { }
+    }
+
+    private var iconName: String {
+        switch coordinator.state {
+        case .idle: "mic"
+        case .holding, .toggled: "mic.fill"
+        case .processing: "waveform"
         }
     }
-}
 
-private func appendTranscriptLog(_ line: String) {
-    guard let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
-        let error = "로그 디렉토리를 찾을 수 없음"
-        FileHandle.standardError.write("[\(error)]\n".data(using: .utf8) ?? Data())
-        return
-    }
-    let typelesLogDir = logsDir.appendingPathComponent("Logs/TypelessLike", isDirectory: true)
-    let logFile = typelesLogDir.appendingPathComponent("transcribe.log", isDirectory: false)
-
-    do {
-        try FileManager.default.createDirectory(at: typelesLogDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-
-        let lineWithNewline = line + "\n"
-        guard let data = lineWithNewline.data(using: .utf8) else { return }
-
-        if FileManager.default.fileExists(atPath: logFile.path) {
-            if let handle = FileHandle(forWritingAtPath: logFile.path) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                handle.closeFile()
-            }
-        } else {
-            try data.write(to: logFile)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path)
+    private var statusLabel: String {
+        switch coordinator.state {
+        case .idle: "대기 중 — 오른쪽 Option을 누르세요"
+        case .holding, .toggled: "녹음 중"
+        case .processing: "다듬는 중"
         }
-    } catch {
-        let errorMsg = String(describing: error)
-        FileHandle.standardError.write("[로그 쓰기 오류] \(errorMsg)\n".data(using: .utf8) ?? Data())
+    }
+
+    init() {
+        let coordinator = coordinator
+        Task { @MainActor in coordinator.start() }
     }
 }
