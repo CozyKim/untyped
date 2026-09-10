@@ -56,6 +56,9 @@ struct OpenAICompatibleRefiner: TextRefiner {
         guard let choice = decoded.choices.first else {
             throw RefinerError.emptyResponse
         }
+        // 출력 제한에 걸리면 서버는 200과 문법적으로 올바른 잘린 텍스트를 반환한다.
+        // 이 검사 없이는 불완전한 문장이 그대로 삽입되고 폴백이 작동하지 않으며
+        // 사용자 음성의 끝이 조용히 손실된다. 원본 전사 삽입보다 훨씬 나쁘다.
         if choice.finish_reason == "length" {
             throw RefinerError.truncated
         }
