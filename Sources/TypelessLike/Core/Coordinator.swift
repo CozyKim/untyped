@@ -9,6 +9,10 @@ import Observation
 final class Coordinator {
     private(set) var state: DictationState = .idle
     private(set) var level: Float = 0
+    /// 다듬기 서버에 연결할 수 있는지. 메뉴가 이 값을 보고 안내 문구를 보여준다.
+    /// 다듬기가 실패해도 원본 전사로 자동 대체되므로, 이 값은 받아쓰기 동작
+    /// 자체를 막지 않고 상태를 알려주는 용도로만 쓴다.
+    private(set) var refinerAvailable = true
 
     private let overlay = OverlayController()
     private let refiner: (any TextRefiner)?
@@ -26,6 +30,17 @@ final class Coordinator {
         }
         monitor.start()
         hotkey = monitor
+        Task { await pollRefinerAvailability() }
+    }
+
+    /// 다듬기 서버 연결 가능 여부를 주기적으로 확인한다. 앱이 떠 있는 동안
+    /// 계속 돈다 — hotkey 감시와 마찬가지로 앱 종료와 함께 끝난다.
+    private func pollRefinerAvailability() async {
+        guard let refiner else { return }
+        while true {
+            refinerAvailable = await refiner.isAvailable
+            try? await Task.sleep(for: .seconds(10))
+        }
     }
 
     private func handle(_ event: TriggerEvent) {

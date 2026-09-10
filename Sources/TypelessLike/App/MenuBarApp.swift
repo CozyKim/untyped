@@ -3,13 +3,19 @@ import AppKit
 
 @main
 struct MenuBarApp: App {
-    @State private var coordinator = Coordinator(
-        refiner: OpenAICompatibleRefiner(
-            baseURL: URL(string: "http://127.0.0.1:8081/v1")!,
-            model: "gemma-4-e2b-it-8bit",
-            apiKey: ProcessInfo.processInfo.environment["TYPELESS_API_KEY"]
+    @State private var coordinator = Coordinator(refiner: MenuBarApp.refiner)
+
+    /// 설정 파일(~/Library/Application Support/TypelessLike/config.json)에서
+    /// 주소·모델·키를 읽어 다듬기 백엔드를 하나 구성한다. Coordinator와 메뉴의
+    /// 연결 상태 확인이 이 인스턴스를 함께 쓴다.
+    private static let refiner: OpenAICompatibleRefiner = {
+        let config = RefinerConfig.loadOrCreateDefault()
+        return OpenAICompatibleRefiner(
+            baseURL: config.baseURL,
+            model: config.model,
+            apiKey: config.apiKeyOrNil
         )
-    )
+    }()
 
     var body: some Scene {
         MenuBarExtra {
@@ -33,12 +39,22 @@ struct MenuBarApp: App {
                 Divider()
             }
             Text(statusLabel)
+            if !coordinator.refinerAvailable {
+                Divider()
+                Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
+                Button("설정 파일 보기…") {
+                    if let url = RefinerConfig.fileURL {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+            }
             Divider()
             Button("종료") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: iconName)
         }
         .onChange(of: coordinator.state) { _, _ in }
+        .onChange(of: coordinator.refinerAvailable) { _, _ in }
         .commands { }
     }
 
