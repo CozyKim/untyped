@@ -230,6 +230,7 @@ Sources/TypelessLike/
   Refine/     TextRefiner.swift             protocol + 폴백 정책
               OpenAICompatibleRefiner.swift  /v1/chat/completions 클라이언트
               RefinementPrompt.swift        규칙 + few-shot 예시
+              RefinerConfig.swift           서버·모델·API 키 설정 파일
   Output/     TextInserter.swift            클립보드 백업 → ⌘V 합성 → 복원
 Tests/TypelessLikeTests/
               DictationStateTests.swift
@@ -274,9 +275,15 @@ struct OpenAICompatibleRefiner: TextRefiner {
     let baseURL: URL      // 예: http://127.0.0.1:8081/v1
     let model: String     // 예: gemma-4-e2b-it-8bit
     let apiKey: String?
-    let timeout: Duration
 }
 ```
+
+타임아웃은 이 타입이 아니라 `refineOrFallback`의 태스크 그룹이 건다. 백엔드마다 다른
+값이 아니라 녹음 길이에서 계산되는 값이기 때문이다(10절).
+
+세 값은 `~/Library/Application Support/TypelessLike/config.json`에서 읽는다. GUI 앱은
+셸 환경변수를 물려받지 않으므로 API 키를 환경변수로 넘길 수 없다. 파일은 디렉터리
+0700, 파일 0600으로 만든다.
 
 `POST {baseURL}/chat/completions`에 OpenAI 형식으로 보낸다. oMLX, Ollama,
 LM Studio가 모두 같은 형식을 쓰므로 구현체를 늘리지 않고 `baseURL`과 `model`만
@@ -384,8 +391,13 @@ few-shot 있음  5/5  "오늘 저녁에 보낼게요."     규칙대로
 - 정정 표시어 앞의 서술을 버리지 못하는 경우가 회귀 스위트에서 3건 남아 있다.
   현재 프롬프트로 도달한 한계이며, 실사용 데이터로 few-shot을 보강해 줄인다.
 
-출력 길이 검증 같은 방어 로직은 MVP에 넣지 않는다. 규칙 4와 예시 3·4로 내용
-소실이 잡히는 것을 확인했으므로, 실제로 재발하면 그때 넣는다.
+요청은 `max_tokens: 900`으로 출력을 제한하고, 응답의 `finish_reason`이 `"length"`면
+throw한다. 제한에 걸린 완료는 200과 문법적으로 멀쩡한 잘린 텍스트로 돌아와서, 검사
+없이는 그대로 삽입되고 폴백이 작동하지 않는다. 사용자가 말한 끝부분이 조용히
+사라지는 것은 원본 전사를 넣는 것보다 나쁘다.
+
+그 외의 출력 검증(길이 비교 등)은 넣지 않는다. 규칙 4와 예시 3·4로 내용 소실이
+잡히는 것을 확인했으므로, 재발하면 그때 넣는다.
 
 ## 7. 상태 기계
 
@@ -561,7 +573,7 @@ func rms(_ samples: UnsafeBufferPointer<Float>) -> Float
 
 | 실패 | 대응 |
 | --- | --- |
-| 다듬기 서버 미가동 | `GET /v1/models` 확인 후 다듬기를 건너뛰고 **원본 전사를 삽입** |
+| 다듬기 서버 미가동 | 요청이 throw되어 **원본 전사를 삽입**. `GET /v1/models`는 메뉴에 "다듬기를 쓸 수 없음"을 표시하는 데만 쓴다 |
 | `refine` throw 또는 타임아웃 | 원본 전사를 삽입 |
 | 마이크 권한 없음 | 메뉴바에서 시스템 설정 열기 안내 |
 | 손쉬운 사용 권한 없음 | 시작 시 `AXIsProcessTrustedWithOptions`로 확인, 안내 |
