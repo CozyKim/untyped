@@ -15,7 +15,6 @@ final class HotkeyMonitor {
     private var localMonitor: Any?
     private var isDown = false
     private var wantsMonitor = false
-    private var hasFinishedLaunching = false
     private var launchObserver: (any NSObjectProtocol)?
 
     init(onEvent: @escaping @MainActor (TriggerEvent) -> Void) {
@@ -25,13 +24,23 @@ final class HotkeyMonitor {
     /// 전역 모니터를 앱 런치가 끝나기 전에 설치하면 MenuBarExtra 상태 아이템이
     /// 실제 마우스 클릭을 받지 못한다. 접근성 경로로는 열리므로 앱이 정상처럼 보이지만
     /// 사용자는 아이콘을 눌러도 아무 반응을 얻지 못한다.
+    ///
+    /// didFinishLaunching 알림은 한 번만 온다. start()가 이미 그 알림이 지나간
+    /// 뒤에 호출되면(예: MainActor로 넘긴 Task가 런치보다 늦게 실행되는 경우)
+    /// 이 시점에 옵저버를 걸어도 다시는 불리지 않아 모니터가 영영 설치되지 않는다.
+    /// NSRunningApplication.current.isFinishedLaunching는 그 알림과 대응하는
+    /// "이미 일어났는가"라는 사실을 지금 시점에 되짚어 확인하게 해주므로,
+    /// 알림을 놓쳤는지 여부와 무관하게 런치 완료 여부를 판단할 수 있다.
     func start() {
         wantsMonitor = true
-        if hasFinishedLaunching {
-            installMonitor()
+        if NSRunningApplication.current.isFinishedLaunching {
+            // 이미 런치가 끝난 뒤에 불렸다. 메인 큐를 한 턴 넘겨 설치한다 —
+            // didFinishLaunching 옵저버도 큐에 올라간 뒤 실행되므로 같은 타이밍이고,
+            // 이 시점엔 런치가 확실히 끝났으니 상태 아이템도 이미 존재한다.
+            DispatchQueue.main.async { [weak self] in self?.installMonitor() }
             return
         }
-        // 런치가 완료될 때까지 기다린다.
+        // 아직 런치가 끝나지 않았다. 완료될 때까지 기다린다.
         guard launchObserver == nil else { return }
         launchObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didFinishLaunchingNotification,
@@ -43,7 +52,6 @@ final class HotkeyMonitor {
     }
 
     private func finishLaunchObserved() {
-        hasFinishedLaunching = true
         if let launchObserver {
             NotificationCenter.default.removeObserver(launchObserver)
         }
