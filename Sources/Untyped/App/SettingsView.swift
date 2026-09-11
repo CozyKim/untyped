@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// config.json의 편집기. 초안을 편집하다 저장을 누르면 파일에 쓰고 Coordinator에
 /// 즉시 적용한다. 필드를 바꿀 때마다 저장하지 않는다 — API 키 한 글자마다 파일을
@@ -80,6 +81,38 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("앱으로 보내기") {
+                Picker("단축키", selection: $draft.targetAppHotkey) {
+                    Text("없음").tag(HotkeyKey?.none)
+                    ForEach(HotkeyKey.allCases, id: \.self) { key in
+                        Text(key.displayName).tag(HotkeyKey?.some(key))
+                    }
+                }
+                LabeledContent("대상 앱") {
+                    HStack(spacing: 8) {
+                        if let bundleID = draft.targetAppBundleID {
+                            if let icon = TargetApp.icon(bundleID: bundleID) {
+                                Image(nsImage: icon)
+                                    .resizable()
+                                    .frame(width: 20, height: 20)
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(TargetApp.displayName(bundleID: bundleID))
+                                Text(bundleID)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("선택된 앱 없음").foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("앱 선택…", action: chooseTargetApp)
+                    }
+                }
+                Text("이 키로 받아쓰면 대상 앱으로 전환해 넣은 뒤 원래 앱으로 돌아옵니다. 대상 앱이 실행 중이 아니면 녹음을 시작하지 않습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("기록") {
                 Toggle("받아쓰기 기록 남기기", isOn: $draft.logEnabled)
                 Text("말한 내용과 다듬은 결과가 로그 파일에 남습니다.")
@@ -87,10 +120,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                // 버튼과 한 줄을 나눠 쓰면 긴 문구가 잘려 보이지 않는다. 폼 폭 520pt에서 버튼 옆에
+                // 남는 폭은 약 170pt인데 가장 긴 문구는 291pt다.
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red)
+                }
                 HStack {
-                    if let errorMessage {
-                        Text(errorMessage).foregroundStyle(.red)
-                    }
                     Spacer()
                     Button("로그 파일 보기…") {
                         if let url = DictationLog.fileURL,
@@ -111,6 +146,22 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520)
+    }
+
+    /// /Applications에서 .app을 고르게 한다. 파일에는 bundle ID만 저장하므로 여기서 읽어 둔다.
+    private func chooseTargetApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(filePath: "/Applications")
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let bundleID = Bundle(url: url)?.bundleIdentifier else {
+            errorMessage = "앱 정보를 읽을 수 없습니다"
+            return
+        }
+        draft.targetAppBundleID = bundleID
+        errorMessage = nil
     }
 
     private func save() {
@@ -135,6 +186,16 @@ struct SettingsView: View {
         guard !prompt.isEmpty else {
             errorMessage = "프롬프트가 비어 있습니다"
             return
+        }
+        if let targetAppHotkey = draft.targetAppHotkey {
+            guard targetAppHotkey != draft.hotkey else {
+                errorMessage = "앱으로 보내기 단축키는 받아쓰기 단축키와 달라야 합니다"
+                return
+            }
+            guard draft.targetAppBundleID != nil else {
+                errorMessage = "대상 앱을 선택하세요"
+                return
+            }
         }
         draft.systemPrompt = prompt == RefinementPrompt.defaultSystemPrompt ? nil : prompt
         do {
