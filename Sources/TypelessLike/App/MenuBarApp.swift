@@ -3,19 +3,7 @@ import AppKit
 
 @main
 struct MenuBarApp: App {
-    @State private var coordinator = Coordinator(refiner: MenuBarApp.refiner)
-
-    /// 설정 파일(~/Library/Application Support/TypelessLike/config.json)에서
-    /// 주소·모델·키를 읽어 다듬기 백엔드를 하나 구성한다. Coordinator와 메뉴의
-    /// 연결 상태 확인이 이 인스턴스를 함께 쓴다.
-    private static let refiner: OpenAICompatibleRefiner = {
-        let config = AppConfig.loadOrCreateDefault()
-        return OpenAICompatibleRefiner(
-            baseURL: config.baseURL,
-            model: config.model,
-            apiKey: config.apiKeyOrNil
-        )
-    }()
+    @State private var coordinator = Coordinator(config: AppConfig.loadOrCreateDefault())
 
     var body: some Scene {
         MenuBarExtra {

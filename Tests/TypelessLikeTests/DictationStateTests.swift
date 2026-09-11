@@ -55,3 +55,11 @@ func processingIgnoresEverything(event: TriggerEvent) {
     #expect(s == .processing)
     #expect(e == .none)
 }
+
+@Test func zeroThresholdNeverToggles() {
+    // 토글 녹음을 끈 설정은 threshold 0으로 표현된다. 249ms 탭도 즉시 처리로 넘어간다.
+    let now = t0.advanced(by: .milliseconds(249))
+    let (s, e) = reduce(.holding(since: t0), .keyUp, now: now, threshold: .zero)
+    #expect(s == .processing)
+    #expect(e == .stopCaptureAndProcess)
+}
