@@ -34,7 +34,9 @@ enum RefinementPrompt {
         다듬은 문장만 출력한다.
         """
 
-    private static let fewShots: [(String, String)] = [
+    /// few-shot 예시. 규칙 하나씩을 시연한다. 설정 창이 읽기 전용으로 보여주므로
+    /// 순서와 내용이 곧 사용자가 보는 목록이다.
+    static let examples: [(input: String, output: String)] = [
         // 1. 짧은 문장의 정정
         ("어 내일 아침에 자료를 보내드릴게요 아니 오늘 저녁에 자료를 보내드릴게요",
          "오늘 저녁에 자료를 보내드릴게요."),
@@ -72,7 +74,7 @@ enum RefinementPrompt {
     static func messages(for raw: String, systemPrompt: String, includeExamples: Bool) -> [ChatMessage] {
         var messages = [ChatMessage(role: "system", content: systemPrompt)]
         if includeExamples {
-            for (input, output) in fewShots {
+            for (input, output) in examples {
                 messages.append(ChatMessage(role: "user", content: input))
                 messages.append(ChatMessage(role: "assistant", content: output))
             }

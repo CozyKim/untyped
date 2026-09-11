@@ -47,6 +47,18 @@ struct SettingsView: View {
                 Text("예시는 기본 규칙(정정 삭제, 군말 제거, 용어 복원)을 보여줍니다. 번역처럼 성격이 다른 지시를 쓸 때는 끄세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                DisclosureGroup("기본 예시 보기") {
+                    ForEach(Array(RefinementPrompt.examples.enumerated()), id: \.offset) { index, example in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(index + 1). \(example.input)")
+                            Text("→ \(example.output)")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .padding(.vertical, 2)
+                    }
+                }
                 HStack {
                     Spacer()
                     Button("기본값으로 되돌리기") {

@@ -114,3 +114,15 @@ import Testing
     #expect(prompt.hasSuffix("다듬은 문장만 출력한다."))
     #expect(!prompt.contains("["))
 }
+
+@Test func examplesAreExposedInTheOrderTheyAreSent() {
+    // 설정 창이 읽기 전용으로 보여주는 목록은 실제로 보내는 예시와 같아야 한다.
+    let messages = RefinementPrompt.messages(
+        for: "원문", systemPrompt: RefinementPrompt.defaultSystemPrompt, includeExamples: true
+    )
+    #expect(RefinementPrompt.examples.count == 8)
+    for (index, example) in RefinementPrompt.examples.enumerated() {
+        #expect(messages[1 + index * 2].content == example.input)
+        #expect(messages[2 + index * 2].content == example.output)
+    }
+}
