@@ -69,7 +69,7 @@ struct MenuBarApp: App {
     private var statusLabel: String {
         switch coordinator.state {
         case .idle: "대기 중 — 오른쪽 Option을 누르세요"
-        case .holding, .toggled: "녹음 중"
+        case .holding, .toggled: "듣는 중"
         case .processing: "다듬는 중"
         }
     }

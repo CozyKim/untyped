@@ -52,7 +52,7 @@ final class Coordinator {
         state = next
         switch effect {
         case .startCapture:
-            overlay.show(status: .recording)
+            overlay.show(status: .listening)
             captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess:
             overlay.show(status: .refining)
