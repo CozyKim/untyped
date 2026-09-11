@@ -22,6 +22,7 @@ final class Coordinator {
     private var availabilityPoll: Task<Void, Never>?
     private var capture: AudioCapture?
     private var transcriber: Transcriber?
+    private let muter = SystemAudioMuter()
     /// beginCapture()를 감싼 핸들. 짧게 눌렀다 떼면 setup이 끝나기 전에
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
     /// "아직 안 끝남"을 보고 오판하지 않도록 이 핸들을 먼저 기다리게 한다.
@@ -117,6 +118,9 @@ final class Coordinator {
             try await newTranscriber.begin(inputSequence: stream)
             capture = newCapture
             transcriber = newTranscriber
+            // 마이크와 분석기가 먼저 돌기 시작한 뒤에 음소거한다. 탭과 aggregate device를
+            // 만드는 데 100~200ms가 걸려, 먼저 하면 그만큼 첫 음절을 놓친다.
+            await muter.mute()
         } catch {
             NSLog("[Coordinator] 녹음 시작 실패: %@", String(describing: error))
             reset()
@@ -124,8 +128,8 @@ final class Coordinator {
     }
 
     private func finishAndInsert() async {
-        // 짧게 눌렀다 떼면 beginCapture()의 세 번의 await(포맷 조회, 마이크 시작,
-        // 분석기 시작)가 아직 안 끝난 채로 여기 먼저 도착할 수 있다. 기다리지
+        // 짧게 눌렀다 떼면 beginCapture()의 네 번의 await(포맷 조회, 마이크 시작,
+        // 분석기 시작, 음소거)가 아직 안 끝난 채로 여기 먼저 도착할 수 있다. 기다리지
         // 않으면 아래 가드가 capture/transcriber를 nil로 보고 "설정 실패"로
         // 오판해 즉시 idle로 돌아가는데, beginCapture()는 뒤늦게 계속 진행되어
         // 아무도 멈추지 않는 마이크와 SpeechAnalyzer를 남긴다.
@@ -133,6 +137,8 @@ final class Coordinator {
         guard let capture, let transcriber else { reset(); return }
         let recorded = await capture.recordedDuration
         await capture.stop()
+        // 다듬는 동안에는 소리가 돌아와 있어야 하므로 삽입까지 기다리지 않는다.
+        await muter.unmute()
 
         let raw = (try? await transcriber.finish()) ?? ""
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
