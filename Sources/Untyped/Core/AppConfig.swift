@@ -28,6 +28,12 @@ struct AppConfig: Codable, Equatable, Sendable {
     var logEnabled: Bool = true
     /// 다듬기 대기 시간의 기본 초. 여기에 녹음 길이의 40%가 더해진다.
     var refineTimeoutSeconds: Int = 4
+    /// 앱으로 보내기 단축키. nil이면 기능이 꺼진다. 기본 단축키와 같은 키는 디코딩 시
+    /// nil로 읽는다 — 같은 키에 모니터 두 개가 붙으면 한 번의 눌림이 두 이벤트로 들어온다.
+    var targetAppHotkey: HotkeyKey? = nil
+    /// 앱으로 보내기의 대상 앱 bundle ID. 이름·아이콘은 저장하지 않고 표시할 때마다
+    /// bundle ID로 조회한다 — 앱이 이름을 바꾸거나 삭제돼도 파일이 낡지 않는다.
+    var targetAppBundleID: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -40,6 +46,8 @@ struct AppConfig: Codable, Equatable, Sendable {
         case maxTokens = "max_tokens"
         case logEnabled = "log_enabled"
         case refineTimeoutSeconds = "refine_timeout_seconds"
+        case targetAppHotkey = "target_app_hotkey"
+        case targetAppBundleID = "target_app_bundle_id"
     }
 
     static let defaultConfig = AppConfig(
@@ -132,5 +140,10 @@ extension AppConfig {
             ?? Self.defaultConfig.logEnabled
         refineTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .refineTimeoutSeconds)
             ?? Self.defaultConfig.refineTimeoutSeconds
+        let rawTargetAppHotkey = try container.decodeIfPresent(String.self, forKey: .targetAppHotkey)
+        let decodedTargetAppHotkey = rawTargetAppHotkey.flatMap(HotkeyKey.init(rawValue:))
+        targetAppHotkey = decodedTargetAppHotkey == hotkey ? nil : decodedTargetAppHotkey
+        let rawTargetAppBundleID = try container.decodeIfPresent(String.self, forKey: .targetAppBundleID)
+        targetAppBundleID = (rawTargetAppBundleID?.isEmpty ?? true) ? nil : rawTargetAppBundleID
     }
 }

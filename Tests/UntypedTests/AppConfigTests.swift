@@ -177,3 +177,65 @@ private func temporaryFileURL() -> URL {
     #expect(object["refine_timeout_seconds"] as? Int == 10)
     #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
 }
+
+private let sampleWithTargetApp: AppConfig = {
+    var config = sample
+    config.targetAppHotkey = .rightControl
+    config.targetAppBundleID = "com.apple.TextEdit"
+    return config
+}()
+
+@Test func targetAppFieldsRoundTripAndUseSnakeCaseKeys() throws {
+    let data = try JSONEncoder().encode(sampleWithTargetApp)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == sampleWithTargetApp)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["target_app_hotkey"] as? String == "right_control")
+    #expect(object["target_app_bundle_id"] as? String == "com.apple.TextEdit")
+}
+
+@Test func targetAppFieldsAreOmittedWhenUnset() throws {
+    // 기능을 쓰지 않는 사용자의 파일에 새 키가 생기면 안 된다.
+    let data = try JSONEncoder().encode(sample)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["target_app_hotkey"] == nil)
+    #expect(object["target_app_bundle_id"] == nil)
+}
+
+@Test func legacyFileWithoutTargetAppFieldsReadsNil() throws {
+    let json = """
+    {"api_key":"sk-legacy","base_url":"http://127.0.0.1:8081/v1","model":"m","hotkey":"right_option"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == nil)
+    #expect(decoded.apiKey == "sk-legacy")
+}
+
+@Test func unknownTargetAppHotkeyReadsNilAndKeepsBundleID() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","target_app_hotkey":"banana","target_app_bundle_id":"com.apple.TextEdit"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == "com.apple.TextEdit")
+}
+
+@Test func targetAppHotkeySameAsPrimaryReadsNil() throws {
+    // 파일을 손으로 고쳐 두 단축키를 같게 만든 경우. 같은 키에 모니터 두 개가 붙으면
+    // 한 번의 눌림이 두 이벤트로 들어오므로 앱으로 보내기 쪽을 꺼 버린다.
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","hotkey":"right_command","target_app_hotkey":"right_command","target_app_bundle_id":"com.apple.TextEdit"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.hotkey == .rightCommand)
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == "com.apple.TextEdit")
+}
+
+@Test func emptyTargetAppBundleIDReadsNil() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","target_app_bundle_id":""}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppBundleID == nil)
+}
