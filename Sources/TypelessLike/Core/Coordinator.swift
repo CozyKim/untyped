@@ -29,7 +29,7 @@ final class Coordinator {
     }
 
     func start() {
-        let monitor = HotkeyMonitor { [weak self] event in
+        let monitor = HotkeyMonitor(key: .rightOption) { [weak self] event in
             self?.handle(event)
         }
         monitor.start()
