@@ -54,7 +54,9 @@ final class Coordinator {
     /// 다듬기 백엔드는 OpenAI 호환 서버 하나뿐이다. 설정으로 주소·모델·키만 갈아끼운다.
     private static func makeRefiner(_ config: AppConfig) -> any TextRefiner {
         OpenAICompatibleRefiner(
-            baseURL: config.baseURL, model: config.model, apiKey: config.apiKeyOrNil
+            baseURL: config.baseURL, model: config.model, apiKey: config.apiKeyOrNil,
+            systemPrompt: config.systemPrompt ?? RefinementPrompt.defaultSystemPrompt,
+            includeExamples: config.includeExamples
         )
     }
 

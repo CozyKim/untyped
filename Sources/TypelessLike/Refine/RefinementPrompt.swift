@@ -18,10 +18,12 @@ enum RefinementPrompt {
     TTS, STT, LLM, API, SDK, CLI, UI, repo, config
     """
 
+    /// 기본 시스템 프롬프트. 설정 창에서 바꾸지 않았을 때 쓰이고, "기본값으로 되돌리기"의
+    /// 원본이다.
+    ///
     /// 규칙은 넷을 넘기지 않는다. 같은 내용을 여섯으로 나눠 쓴 판이
     /// 회귀 스위트에서 더 낮은 점수를 냈다. 규칙이 많아지면 각각의 영향력이 희석된다.
-    private static func rules(nonce: String) -> String {
-        """
+    static let defaultSystemPrompt = """
         받아쓰기 원문을 다듬는다.
         1. 정정 표시어('아니', '아니다', '그게 아니라')가 나오면 표시어와 그 앞의 말을 전부 지우고 \
         뒤의 말만 남긴다. 앞뒤 주제가 달라도 마찬가지다. 문장이 길고 절이 여러 개여도 똑같이 적용한다.
@@ -29,9 +31,8 @@ enum RefinementPrompt {
         3. 아래 사전의 단어가 음차돼 있으면 영문으로 되돌린다. 사전에 없는 말은 손대지 않는다.
           사전: \(glossary)
         4. 문장부호와 띄어쓰기를 정리한다. 그 외의 내용은 바꾸지 않는다.
-        다듬은 문장만 출력한다. [\(nonce)]
+        다듬은 문장만 출력한다.
         """
-    }
 
     private static let fewShots: [(String, String)] = [
         // 1. 짧은 문장의 정정
@@ -60,15 +61,21 @@ enum RefinementPrompt {
          "다이어그램으로 그려줘."),
     ]
 
-    static func messages(for raw: String) -> [ChatMessage] {
-        // 서버의 프롬프트 캐시는 텍스트 prefix로 key를 만든다. nonce가 고정되면
-        // 이전 요청의 응답을 돌려주게 되는데, 받아쓰기 앱에서는 사용자가 말하지
-        // 않은 문장이 삽입되는 결과가 된다. 따라서 매 요청마다 다른 nonce를
-        // 생성해야 한다.
-        var messages = [ChatMessage(role: "system", content: rules(nonce: UUID().uuidString.prefix(8).lowercased()))]
-        for (input, output) in fewShots {
-            messages.append(ChatMessage(role: "user", content: input))
-            messages.append(ChatMessage(role: "assistant", content: output))
+    /// 시스템 메시지는 받은 프롬프트를 그대로 쓴다. 매 호출 바이트 단위로 같아야
+    /// 서버의 프리픽스 캐시가 적중해 첫 토큰이 빨리 나온다. 텍스트만 보내는 요청에서는
+    /// 사용자 메시지가 프리픽스 뒤에 붙어 캐시가 요청을 정확히 구분하므로(실측으로
+    /// 확인), 캐시를 깨기 위한 난수를 붙이지 않는다.
+    ///
+    /// few-shot 예시는 기본 규칙(정정 삭제, 군말 제거, 용어 복원)을 시연한다. 성격이
+    /// 다른 프롬프트(예: 번역)를 쓰면 예시가 지시보다 세게 작용해 지시가 무시되므로
+    /// 호출자가 예시를 뺄 수 있어야 한다.
+    static func messages(for raw: String, systemPrompt: String, includeExamples: Bool) -> [ChatMessage] {
+        var messages = [ChatMessage(role: "system", content: systemPrompt)]
+        if includeExamples {
+            for (input, output) in fewShots {
+                messages.append(ChatMessage(role: "user", content: input))
+                messages.append(ChatMessage(role: "assistant", content: output))
+            }
         }
         messages.append(ChatMessage(role: "user", content: raw))
         return messages

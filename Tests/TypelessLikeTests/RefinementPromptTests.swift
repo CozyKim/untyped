@@ -2,7 +2,9 @@ import Testing
 @testable import TypelessLike
 
 @Test func systemPromptCarriesFourRulesAndGlossary() {
-    let messages = RefinementPrompt.messages(for: "테스트")
+    let messages = RefinementPrompt.messages(
+        for: "테스트", systemPrompt: RefinementPrompt.defaultSystemPrompt, includeExamples: true
+    )
     let system = messages.first
     #expect(system?.role == "system")
     let text = system?.content ?? ""
@@ -44,7 +46,9 @@ import Testing
 }
 
 @Test func eightFewShotPairsPrecedeTheInput() {
-    let messages = RefinementPrompt.messages(for: "원문")
+    let messages = RefinementPrompt.messages(
+        for: "원문", systemPrompt: RefinementPrompt.defaultSystemPrompt, includeExamples: true
+    )
     // system 1 + (user, assistant) * 8 + user 1 = 18
     #expect(messages.count == 18)
     #expect(messages.last?.role == "user")
@@ -75,14 +79,38 @@ import Testing
     #expect(messages[16].content.contains("다이어그램으로"))  // pair 8 assistant
 }
 
-@Test func nonceEnsuresUniquenessAcrossManyRequests() {
-    // 저 entropy nonce는 1000 샘플 중 일부에서만 다른 값을 가질 수 있다.
-    // 이 테스트는 완벽한 uniqueness를 확인하여 그런 회귀를 감지한다.
-    // 현재 구현(32비트, 8개 hex)은 flake 없이 통과한다.
-    var nonces = Set<String>()
-    for _ in 0..<1000 {
-        let systemPrompt = RefinementPrompt.messages(for: "테스트").first?.content ?? ""
-        nonces.insert(systemPrompt)
-    }
-    #expect(nonces.count == 1000)
+@Test func systemMessageIsExactlyTheGivenPromptEveryTime() {
+    // 서버의 프리픽스 캐시가 적중하려면 시스템 메시지가 호출마다 바이트 단위로 같아야 한다.
+    // 텍스트만 보내는 요청에서는 사용자 메시지가 프리픽스 뒤에 붙어 캐시가 요청을
+    // 정확히 구분하므로, 캐시를 깨는 난수를 붙일 이유가 없다 — 붙이면 매 요청이 느려질 뿐이다.
+    let first = RefinementPrompt.messages(for: "a", systemPrompt: "규칙", includeExamples: false)
+    let second = RefinementPrompt.messages(for: "b", systemPrompt: "규칙", includeExamples: false)
+    #expect(first.first?.content == "규칙")
+    #expect(second.first?.content == "규칙")
+}
+
+@Test func customSystemPromptReplacesTheDefault() {
+    let messages = RefinementPrompt.messages(
+        for: "원문", systemPrompt: "받아쓰기 원문을 영어로 번역한다.", includeExamples: true
+    )
+    #expect(messages.first?.role == "system")
+    #expect(messages.first?.content == "받아쓰기 원문을 영어로 번역한다.")
+    #expect(messages.count == 18)
+    #expect(messages.last?.content == "원문")
+}
+
+@Test func examplesCanBeOmitted() {
+    let messages = RefinementPrompt.messages(
+        for: "원문", systemPrompt: RefinementPrompt.defaultSystemPrompt, includeExamples: false
+    )
+    #expect(messages.count == 2)
+    #expect(messages[0].role == "system")
+    #expect(messages[1].role == "user")
+    #expect(messages[1].content == "원문")
+}
+
+@Test func defaultSystemPromptEndsWithOutputInstructionAndNoTag() {
+    let prompt = RefinementPrompt.defaultSystemPrompt
+    #expect(prompt.hasSuffix("다듬은 문장만 출력한다."))
+    #expect(!prompt.contains("["))
 }
