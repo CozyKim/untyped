@@ -30,13 +30,9 @@ struct MenuBarApp: App {
             if !coordinator.refinerAvailable {
                 Divider()
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
-                Button("설정 파일 보기…") {
-                    if let url = AppConfig.fileURL {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
-                }
             }
             Divider()
+            OpenSettingsButton()
             Button("종료") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: iconName)
@@ -44,6 +40,10 @@ struct MenuBarApp: App {
         .onChange(of: coordinator.state) { _, _ in }
         .onChange(of: coordinator.refinerAvailable) { _, _ in }
         .commands { }
+
+        Settings {
+            SettingsView(coordinator: coordinator)
+        }
     }
 
     private var iconName: String {
@@ -56,7 +56,7 @@ struct MenuBarApp: App {
 
     private var statusLabel: String {
         switch coordinator.state {
-        case .idle: "대기 중 — 오른쪽 Option을 누르세요"
+        case .idle: "대기 중 — \(coordinator.config.hotkey.displayName) 키를 누르세요"
         case .holding, .toggled: "녹음 중"
         case .processing: "다듬는 중"
         }
@@ -74,5 +74,18 @@ struct MenuBarApp: App {
 
         let coordinator = coordinator
         Task { @MainActor in coordinator.start() }
+    }
+}
+
+/// LSUIElement 앱은 활성화 없이 설정 창을 열면 다른 앱 뒤에 가려질 수 있다.
+/// openSettings는 환경값이라 씬 안의 뷰에서만 읽을 수 있어 별도 뷰로 뺀다.
+private struct OpenSettingsButton: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Button("설정…") {
+            NSApp.activate()
+            openSettings()
+        }
     }
 }
