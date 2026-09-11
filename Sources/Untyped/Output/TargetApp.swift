@@ -46,7 +46,7 @@ enum TargetApp {
 
     /// 대상 앱을 앞으로 가져와 텍스트를 붙여넣고 원래 앱으로 돌아온다.
     @MainActor
-    static func send(_ text: String, toAppWithBundleID bundleID: String) async -> SendResult {
+    static func send(_ text: String, toAppWithBundleID bundleID: String, pressReturn: Bool) async -> SendResult {
         guard let target = runningApplication(bundleID: bundleID) else { return .notRunning }
         // 손쉬운 사용 권한이 없으면 키보드 포커스 확인도 ⌘V도 할 수 없다. 앱을 앞으로 가져온 뒤
         // 상한까지 기다리다 포커스만 옮긴 채 실패하지 않도록 전환 전에 돌려보낸다.
@@ -62,7 +62,7 @@ enum TargetApp {
                 return .notBroughtToFront
             }
         }
-        await TextInserter.insert(text)
+        await TextInserter.insert(text, pressReturn: pressReturn)
         if let origin, origin != target, !origin.isTerminated {
             try? await Task.sleep(for: returnDelay)
             // 복귀 실패는 무시한다. 텍스트는 이미 들어갔다.

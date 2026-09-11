@@ -34,6 +34,14 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// 앱으로 보내기의 대상 앱 bundle ID. 이름·아이콘은 저장하지 않고 표시할 때마다
     /// bundle ID로 조회한다 — 앱이 이름을 바꾸거나 삭제돼도 파일이 낡지 않는다.
     var targetAppBundleID: String? = nil
+    /// 넣은 뒤 Return을 누를지. 채팅 앱에 바로 전송할 때 쓴다. 터미널이면 명령이 실행되므로
+    /// 기본은 꺼짐이다.
+    var pressReturn: Bool = false
+    /// 앱으로 보내기로 넣은 뒤 Return을 누를지. 기본 단축키 경로와 독립이다.
+    var targetAppPressReturn: Bool = false
+    /// 다듬기 실패로 원본 전사가 들어간 경우에도 Return을 누를지. 두 경로에 모두 적용된다.
+    /// 원본에는 군말·정정이 남아 있을 수 있어 보내기 전에 손볼 기회를 주는 것이 기본이다.
+    var pressReturnOnFallback: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -48,6 +56,9 @@ struct AppConfig: Codable, Equatable, Sendable {
         case refineTimeoutSeconds = "refine_timeout_seconds"
         case targetAppHotkey = "target_app_hotkey"
         case targetAppBundleID = "target_app_bundle_id"
+        case pressReturn = "press_return"
+        case targetAppPressReturn = "target_app_press_return"
+        case pressReturnOnFallback = "press_return_on_fallback"
     }
 
     static let defaultConfig = AppConfig(
@@ -145,5 +156,25 @@ extension AppConfig {
         targetAppHotkey = decodedTargetAppHotkey == hotkey ? nil : decodedTargetAppHotkey
         let rawTargetAppBundleID = try container.decodeIfPresent(String.self, forKey: .targetAppBundleID)
         targetAppBundleID = (rawTargetAppBundleID?.isEmpty ?? true) ? nil : rawTargetAppBundleID
+        pressReturn = try container.decodeIfPresent(Bool.self, forKey: .pressReturn)
+            ?? Self.defaultConfig.pressReturn
+        targetAppPressReturn = try container.decodeIfPresent(Bool.self, forKey: .targetAppPressReturn)
+            ?? Self.defaultConfig.targetAppPressReturn
+        pressReturnOnFallback = try container.decodeIfPresent(Bool.self, forKey: .pressReturnOnFallback)
+            ?? Self.defaultConfig.pressReturnOnFallback
+    }
+}
+
+extension AppConfig {
+    /// 넣은 뒤 Return을 누를지. 경로별 토글이 켜져 있어야 하고, 원본 전사가 들어간 경우는
+    /// 따로 허용했을 때만 누른다.
+    func pressesReturn(for destination: InsertDestination, outcome: RefineOutcome) -> Bool {
+        let enabled = switch destination {
+        case .frontmost: pressReturn
+        case .targetApp: targetAppPressReturn
+        }
+        guard enabled else { return false }
+        if case .fallback = outcome { return pressReturnOnFallback }
+        return true
     }
 }

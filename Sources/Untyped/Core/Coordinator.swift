@@ -177,15 +177,16 @@ final class Coordinator {
         let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(
             for: recorded, base: .seconds(config.refineTimeoutSeconds)
         ))
+        let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
         switch destination {
         case .frontmost:
-            await TextInserter.insert(outcome.text)
+            await TextInserter.insert(outcome.text, pressReturn: pressReturn)
         case .targetApp:
             // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
             let result: TargetApp.SendResult
             if let bundleID = config.targetAppBundleID {
-                result = await TargetApp.send(outcome.text, toAppWithBundleID: bundleID)
+                result = await TargetApp.send(outcome.text, toAppWithBundleID: bundleID, pressReturn: pressReturn)
             } else {
                 result = .notRunning
             }

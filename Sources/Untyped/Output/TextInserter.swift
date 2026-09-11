@@ -20,6 +20,12 @@ enum TextInserter {
     /// 긴 쪽으로 여유 있게 잡는다.
     static let restoreDelay: Duration = .seconds(1)
 
+    /// ⌘V 뒤 붙여넣은 텍스트가 실제로 입력창에 나타날 때까지 기다리는 상한. 그 전에 Return을
+    /// 보내면 빈 입력창에 눌려 아무 일도 안 일어나고 그 뒤에 텍스트만 들어온다. 나타나는
+    /// 시점은 한가할 때도 TextEdit 220ms, Chromium 입력창 126ms로 앱과 부하에 따라 달라
+    /// 고정 지연으로는 맞출 수 없다. 값을 노출하지 않는 앱을 위해 상한 뒤에는 그냥 보낸다.
+    static let pasteSettleTimeout: Duration = .seconds(1)
+
     /// 직전 삽입의 복원 작업. 다음 삽입은 스냅샷을 뜨기 전에 이 작업을 기다린다.
     @MainActor
     private static var pendingRestore: Task<Void, Never>?
@@ -41,7 +47,7 @@ enum TextInserter {
     /// 보호되므로 첫 번째 호출의 받아쓰기 내용이 남거나 클립보드가 완전히 비게 된다.
     /// 호출자는 이 함수의 동시성을 직렬화해야 한다.
     @MainActor
-    static func insert(_ text: String) async {
+    static func insert(_ text: String, pressReturn: Bool = false) async {
         guard !text.isEmpty else { return }
 
         // Accessibility 권한이 없으면 CGEventPost가 무음으로 실패하고 클립보드만 손상된다.
@@ -49,6 +55,10 @@ enum TextInserter {
         guard hasAccessibilityPermission else { return }
 
         await insert(text, into: .general, paste: postCommandV)
+        if pressReturn {
+            await waitUntilPasted(text)
+            postKey(vKeyReturn)
+        }
     }
 
     /// 클립보드와 붙여넣기 동작을 주입받는 핵심 경로. 테스트는 이름 있는 pasteboard와
@@ -94,15 +104,51 @@ enum TextInserter {
         }
     }
 
+    /// HIToolbox/Events.h의 kVK_* 값.
+    private static let vKeyV: CGKeyCode = 9
+    private static let vKeyReturn: CGKeyCode = 36
+
     private static func postCommandV() {
+        postKey(vKeyV, flags: .maskCommand)
+    }
+
+    private static func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let vKeyV: CGKeyCode = 9
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyV, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyV, keyDown: false)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         else { return }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
+        down.flags = flags
+        up.flags = flags
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+
+    /// 붙여넣은 텍스트의 끝부분이 포커스된 요소의 값에 나타날 때까지 기다린다.
+    /// 끝부분만 비교하는 이유: 입력창에 이미 다른 내용이 있을 수 있고, 앱이 줄바꿈을
+    /// 문단으로 바꾸는 등 앞부분을 다르게 표현할 수 있다.
+    @MainActor
+    private static func waitUntilPasted(_ text: String) async {
+        let tail = String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(20))
+        guard !tail.isEmpty else { return }
+        let deadline = ContinuousClock.now + pasteSettleTimeout
+        while ContinuousClock.now < deadline {
+            if focusedElementValue()?.contains(tail) == true { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// 앞에 있는 앱의 포커스된 요소가 노출하는 문자열 값. 텍스트 입력창이 아니거나 앱이
+    /// 접근성 값을 제공하지 않으면 nil.
+    private static func focusedElementValue() -> String? {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        var element: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &element) == .success,
+              let element
+        else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element as! AXUIElement, kAXValueAttribute as CFString, &value) == .success
+        else { return nil }
+        return value as? String
     }
 }

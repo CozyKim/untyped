@@ -27,6 +27,7 @@ private func temporaryFileURL() -> URL {
     #expect(Set(object.keys) == [
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
+        "press_return", "target_app_press_return", "press_return_on_fallback",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -238,4 +239,63 @@ private let sampleWithTargetApp: AppConfig = {
     """
     let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
     #expect(decoded.targetAppBundleID == nil)
+}
+
+@Test func pressReturnFieldsRoundTripAndDefaultToFalse() throws {
+    var config = sample
+    config.pressReturn = true
+    config.targetAppPressReturn = true
+    config.pressReturnOnFallback = true
+    let data = try JSONEncoder().encode(config)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == config)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["press_return"] as? Bool == true)
+    #expect(object["target_app_press_return"] as? Bool == true)
+    #expect(object["press_return_on_fallback"] as? Bool == true)
+
+    // 필드가 없는 기존 파일은 셋 다 꺼진 것으로 읽는다.
+    let legacy = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(legacy.utf8))
+    #expect(decoded.pressReturn == false)
+    #expect(decoded.targetAppPressReturn == false)
+    #expect(decoded.pressReturnOnFallback == false)
+}
+
+@Test func pressesReturnOnlyWhenPathToggleIsOn() {
+    var config = sample
+    let refined = RefineOutcome.refined("x")
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == false)
+
+    config.pressReturn = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == true)
+    // 경로별 토글은 서로 독립이다.
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == false)
+
+    config.pressReturn = false
+    config.targetAppPressReturn = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == true)
+}
+
+@Test func fallbackPressesReturnOnlyWithFallbackToggle() {
+    var config = sample
+    config.pressReturn = true
+    config.targetAppPressReturn = true
+    let fallback = RefineOutcome.fallback("x", .timeout)
+    // 원본 전사에는 군말·정정이 남아 있을 수 있어 기본으로는 보내지 않는다.
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
+
+    config.pressReturnOnFallback = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == true)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == true)
+
+    // 원본-삽입 토글만으로는 Return을 누르지 않는다. 경로별 토글이 먼저다.
+    config.pressReturn = false
+    config.targetAppPressReturn = false
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
 }

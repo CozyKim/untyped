@@ -80,6 +80,14 @@ struct SettingsView: View {
                 Text("끄면 키를 누르는 동안만 녹음합니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("넣은 뒤 Return 누르기", isOn: $draft.pressReturn)
+                Text("채팅 앱에서 바로 전송할 때 씁니다. 터미널에서는 명령이 실행됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("원본 삽입 때도 Return 누르기", isOn: $draft.pressReturnOnFallback)
+                Text("다듬기 시간 초과·서버 오류로 원본 전사가 들어간 경우에도 Return을 누릅니다. 앱으로 보내기에도 적용됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("앱으로 보내기") {
                 Picker("단축키", selection: $draft.targetAppHotkey) {
@@ -110,6 +118,10 @@ struct SettingsView: View {
                     }
                 }
                 Text("이 키로 받아쓰면 대상 앱으로 전환해 넣은 뒤 원래 앱으로 돌아옵니다. 대상 앱이 실행 중이 아니면 녹음을 시작하지 않습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("넣은 뒤 Return 누르기", isOn: $draft.targetAppPressReturn)
+                Text("대상 앱이 터미널이면 명령이 실행됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
