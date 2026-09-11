@@ -127,6 +127,13 @@ STT : 어 내일 아침에 회의 자료를 보내드릴게요 아니 오늘 저
 결과: 오늘 저녁에 회의 자료를 보내드릴게요.
 ```
 
+When the raw transcript was inserted instead, a `원인:` line right under the header says why — the local LLM server was not running (connection refused), the model was still loading (cold start: the warm-up request sent on key-down had not returned), the server answered but too slowly, or an HTTP error:
+
+```
+[2026-09-12 22:10:33] 녹음 7.2초 · 원본 (다듬기 시간 초과)
+원인: 콜드 스타트 — 예열 요청이 9.3초째 응답 없음(모델 로드 중). 대기 상한 6.8초
+```
+
 Since it records everything you say, it can be turned off in Settings.
 
 ## Troubleshooting

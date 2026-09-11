@@ -68,9 +68,8 @@ struct OpenAICompatibleRefiner: TextRefiner {
     func refine(_ raw: String) async throws -> String {
         let request = try chatRequest(for: raw, maxTokens: maxTokens)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw RefinerError.badStatus
-        }
+        guard let http = response as? HTTPURLResponse else { throw RefinerError.badStatus(0) }
+        guard http.statusCode == 200 else { throw RefinerError.badStatus(http.statusCode) }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
         guard let choice = decoded.choices.first else {
             throw RefinerError.emptyResponse
@@ -86,7 +85,7 @@ struct OpenAICompatibleRefiner: TextRefiner {
 }
 
 enum RefinerError: Error {
-    case badStatus
+    case badStatus(Int)
     case emptyResponse
     case truncated
 }

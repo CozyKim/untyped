@@ -29,6 +29,10 @@ final class Coordinator {
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
     /// "아직 안 끝남"을 보고 오판하지 않도록 이 핸들을 먼저 기다리게 한다.
     private var captureSetup: Task<Void, Never>?
+    /// 이번 녹음의 예열 요청 시각. 다듬기가 시간 초과됐을 때 콜드 스타트(모델 로드) 때문이었는지
+    /// 로그에 적기 위해 시작과 완료를 기억한다.
+    private var warmUpStartedAt: ContinuousClock.Instant?
+    private var warmUpFinishedAt: ContinuousClock.Instant?
 
     init(config: AppConfig) {
         self.config = config
@@ -119,7 +123,15 @@ final class Coordinator {
             // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
             let refiner = refiner
-            Task { await refiner.warmUp() }
+            let startedAt = ContinuousClock.now
+            warmUpStartedAt = startedAt
+            warmUpFinishedAt = nil
+            Task { [weak self] in
+                await refiner.warmUp()
+                // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
+                guard let self, self.warmUpStartedAt == startedAt else { return }
+                self.warmUpFinishedAt = .now
+            }
             captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess(let destination):
             overlay.show(status: .refining)
@@ -174,9 +186,11 @@ final class Coordinator {
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
         guard !raw.isEmpty else { reset(); return }
 
-        let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(
-            for: recorded, base: .seconds(config.refineTimeoutSeconds)
-        ))
+        let timeout = refineTimeout(for: recorded, base: .seconds(config.refineTimeoutSeconds))
+        let outcome = await refineOrFallback(raw, using: refiner, timeout: timeout)
+        // 예열 상태는 다듬기가 끝난 직후에 읽는다. 로그는 삽입 뒤에 쓰는데 그때는 다음 녹음이
+        // 시작돼 예열 시각이 덮여 있을 수 있다.
+        let warmUp = warmUpState(now: .now)
         let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
         switch destination {
@@ -202,7 +216,10 @@ final class Coordinator {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
         if config.logEnabled, let url = DictationLog.fileURL {
-            let entry = DictationLog.entry(raw: raw, outcome: outcome, recorded: recorded, at: .now)
+            let cause = await fallbackCause(for: outcome, timeout: timeout, warmUp: warmUp)
+            let entry = DictationLog.entry(
+                raw: raw, outcome: outcome, recorded: recorded, at: .now, cause: cause
+            )
             // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다.
             Task.detached {
                 do {
@@ -211,6 +228,30 @@ final class Coordinator {
                     NSLog("[Coordinator] 로그 기록 실패: %@", String(describing: error))
                 }
             }
+        }
+    }
+
+    private func warmUpState(now: ContinuousClock.Instant) -> WarmUpState {
+        guard let startedAt = warmUpStartedAt else { return .notStarted }
+        if let finishedAt = warmUpFinishedAt { return .finished(in: finishedAt - startedAt) }
+        return .running(for: now - startedAt)
+    }
+
+    /// 폴백일 때만 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결 확인(최대 2초)은 삽입과
+    /// 상태 초기화가 끝난 뒤에 하므로 사용자를 기다리게 하지 않는다.
+    private func fallbackCause(
+        for outcome: RefineOutcome, timeout: Duration, warmUp: WarmUpState
+    ) async -> String? {
+        guard case .fallback(_, let reason) = outcome else { return nil }
+        switch reason {
+        case .timeout, .failed:
+            let reachable = await refiner.isAvailable
+            return Untyped.fallbackCause(
+                reason: reason, timeout: timeout, serverReachable: reachable,
+                warmUp: warmUp, baseURL: config.baseURL
+            )
+        case .noRefiner, .truncated, .emptyResult:
+            return nil
         }
     }
 
