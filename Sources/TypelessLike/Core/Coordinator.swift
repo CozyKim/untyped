@@ -95,6 +95,10 @@ final class Coordinator {
         switch effect {
         case .startCapture:
             overlay.show(status: .listening)
+            // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
+            // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
+            let refiner = refiner
+            Task { await refiner.warmUp() }
             captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess:
             overlay.show(status: .refining)

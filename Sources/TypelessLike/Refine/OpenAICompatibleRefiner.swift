@@ -39,7 +39,15 @@ struct OpenAICompatibleRefiner: TextRefiner {
         }
     }
 
-    func refine(_ raw: String) async throws -> String {
+    /// 실제 요청과 같은 프리픽스로 1토큰만 요청한다. 메모리가 부족한 기기에서는 모델이
+    /// 스왑에 밀려나 첫 응답이 수 초~수십 초 걸리는데, 녹음하는 동안 그 비용을 미리 치르고
+    /// 프리픽스 블록도 캐시에 올려 두면 전사가 끝났을 때 곧바로 다듬을 수 있다.
+    func warmUp() async {
+        guard let request = try? chatRequest(for: ".", maxTokens: 1) else { return }
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    private func chatRequest(for raw: String, maxTokens: Int) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -54,6 +62,11 @@ struct OpenAICompatibleRefiner: TextRefiner {
                     ),
                     temperature: 0, max_tokens: maxTokens)
         )
+        return request
+    }
+
+    func refine(_ raw: String) async throws -> String {
+        let request = try chatRequest(for: raw, maxTokens: maxTokens)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw RefinerError.badStatus

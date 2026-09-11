@@ -4,6 +4,12 @@ import Foundation
 protocol TextRefiner: Sendable {
     var isAvailable: Bool { get async }
     func refine(_ raw: String) async throws -> String
+    /// 서버가 모델을 메모리에 올리고 프리픽스를 캐시하도록 미리 건드린다. 결과는 버린다.
+    func warmUp() async
+}
+
+extension TextRefiner {
+    func warmUp() async {}
 }
 
 /// 녹음 길이에 비례하는 타임아웃. 고정값만 쓰면 긴 발화가 항상 폴백된다.
