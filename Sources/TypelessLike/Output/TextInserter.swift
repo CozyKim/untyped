@@ -3,11 +3,26 @@ import ApplicationServices
 
 /// 완성된 문자열만 받는다. 전사도 다듬기도 모른다.
 enum TextInserter {
-    /// 붙여넣기가 클립보드를 읽기 전에 복원하면 옛 내용이 들어간다.
-    /// 세 가지 지연값(50, 150, 400ms)을 여러 앱에서 실측한 결과 모두 성공했다.
-    /// 150ms를 택한 이유는 복원이 너무 빠르면 붙여넣기가 옛 내용을 집어가는 무언의 실패를
-    /// 피하기 위함이다. 지연을 늘려도 사용자가 인지할 수 있는 비용이 없으므로 여유 있는 값을 선택했다.
-    static let restoreDelay: Duration = .milliseconds(150)
+    /// 붙여넣기가 클립보드를 읽기 전에 복원하면 옛 내용이 대신 붙여넣어진다.
+    /// 옛 내용은 직전 받아쓰기 후 복원해 둔 사용자의 클립보드이므로, 이 실패는
+    /// "다시 녹음해도 직전에 삽입된 문장이 그대로 들어가는" 증상으로 나타난다.
+    ///
+    /// 150ms는 TextEdit 같은 가벼운 앱에서는 충분했지만, Obsidian 등 Chromium·Electron
+    /// 계열은 붙여넣기가 렌더러↔브라우저 프로세스 IPC를 거치고 다듬기 서버가 GPU를
+    /// 막 쓰고 난 직후엔 더 느려져 150ms를 넘길 수 있다.
+    ///
+    /// macOS는 붙여넣기가 클립보드를 읽었는지 알려주지 않는다. NSPasteboardItemDataProvider로
+    /// "읽힘" 시점을 잡는 방법은 Raycast 같은 클립보드 히스토리가 대상 앱보다 먼저 읽어 가면
+    /// 오히려 더 일찍 복원되므로 쓸 수 없다. 남는 선택은 넉넉한 고정 지연이다.
+    /// 복원은 호출자를 기다리게 하지 않으므로(아래 `pendingRestore`) 지연을 늘려도 오버레이나
+    /// 다음 받아쓰기 시작이 늦어지지 않는다. 너무 짧으면 잘못된 텍스트가 조용히 들어가고,
+    /// 너무 길면 그 사이 사용자가 직접 Cmd+V를 눌렀을 때 받아쓰기 텍스트가 나오는 정도이므로
+    /// 긴 쪽으로 여유 있게 잡는다.
+    static let restoreDelay: Duration = .seconds(1)
+
+    /// 직전 삽입의 복원 작업. 다음 삽입은 스냅샷을 뜨기 전에 이 작업을 기다린다.
+    @MainActor
+    private static var pendingRestore: Task<Void, Never>?
 
     static var hasAccessibilityPermission: Bool {
         AXIsProcessTrusted()
@@ -20,9 +35,10 @@ enum TextInserter {
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    /// 완료된 텍스트를 클립보드 경유로 삽입한다. 동시 호출은 인정되지 않는다.
-    /// 두 호출이 겹치면 각 호출이 자신의 변경 수 검사로만 보호되므로
-    /// 첫 번째 호출의 받아쓰기 내용이 남거나 클립보드가 완전히 비게 된다.
+    /// 완료된 텍스트를 클립보드 경유로 삽입한다. 붙여넣기 이벤트를 보낸 직후 반환하며
+    /// 클립보드 복원은 `restoreDelay` 뒤에 따로 이루어진다.
+    /// 동시 호출은 인정되지 않는다. 두 호출이 겹치면 각 호출이 자신의 변경 수 검사로만
+    /// 보호되므로 첫 번째 호출의 받아쓰기 내용이 남거나 클립보드가 완전히 비게 된다.
     /// 호출자는 이 함수의 동시성을 직렬화해야 한다.
     @MainActor
     static func insert(_ text: String) async {
@@ -32,7 +48,17 @@ enum TextInserter {
         // 사전에 검사하여 변경 없이 반환하는 것이 낫다.
         guard hasAccessibilityPermission else { return }
 
-        let pasteboard = NSPasteboard.general
+        await insert(text, into: .general, paste: postCommandV)
+    }
+
+    /// 클립보드와 붙여넣기 동작을 주입받는 핵심 경로. 테스트는 이름 있는 pasteboard와
+    /// 아무것도 하지 않는 `paste`를 넘겨, 테스트 자신이 "클립보드를 읽는 앱" 역할을 한다.
+    @MainActor
+    static func insert(_ text: String, into pasteboard: NSPasteboard, paste: () -> Void) async {
+        // 직전 삽입의 복원이 아직 남아 있으면 먼저 끝낸다. 지금 스냅샷을 뜨면 원래 클립보드가
+        // 아니라 직전 받아쓰기 텍스트를 담게 되고, 직전 복원은 변경 수 불일치로 건너뛰어져
+        // 사용자의 원래 클립보드가 영영 사라진다.
+        await pendingRestore?.value
 
         // 클립보드 전체 스냅샷 생성. lazy file promise는 clearContents()로 소유권을 잃으면
         // 콜백을 다시 호출할 수 없으므로 복원 불가능하다. 손실은 불가피하다.
@@ -52,15 +78,19 @@ enum TextInserter {
         let myChangeCount = pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        postCommandV()
+        paste()
 
-        try? await Task.sleep(for: restoreDelay)
+        // 복원을 호출자와 분리한다. 호출자는 삽입이 끝나면 곧바로 오버레이를 내리고
+        // 다음 받아쓰기를 받을 수 있어야 하므로 복원 지연이 그 경로를 막아서는 안 된다.
+        pendingRestore = Task { @MainActor in
+            try? await Task.sleep(for: restoreDelay)
 
-        // 다른 프로세스가 클립보드에 개입하지 않았으면 원래 내용으로 복원한다.
-        guard pasteboard.changeCount == myChangeCount else { return }
-        pasteboard.clearContents()
-        if !savedItems.isEmpty {
-            pasteboard.writeObjects(savedItems)
+            // 다른 프로세스가 클립보드에 개입하지 않았으면 원래 내용으로 복원한다.
+            guard pasteboard.changeCount == myChangeCount else { return }
+            pasteboard.clearContents()
+            if !savedItems.isEmpty {
+                pasteboard.writeObjects(savedItems)
+            }
         }
     }
 
