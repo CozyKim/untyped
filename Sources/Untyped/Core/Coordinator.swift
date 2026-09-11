@@ -90,7 +90,7 @@ final class Coordinator {
     private func handle(_ event: TriggerEvent) {
         // 토글을 끄면 "짧은 누름"이 성립하지 않아 keyUp이 항상 처리로 넘어간다 — push-to-talk.
         let threshold: Duration = config.toggleEnabled ? DictationTuning.holdThreshold : .zero
-        let (next, effect) = reduce(state, event, now: .now, threshold: threshold)
+        let (next, effect) = reduce(state, event, from: .frontmost, now: .now, threshold: threshold)
         state = next
         switch effect {
         case .startCapture:
