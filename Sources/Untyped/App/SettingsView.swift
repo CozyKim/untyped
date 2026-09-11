@@ -14,6 +14,9 @@ struct SettingsView: View {
     /// systemPrompt는 nil이 "기본값"이라 편집 중에는 실제 텍스트로 들고 저장 시점에
     /// 기본값과 비교한다.
     @State private var promptText: String
+    /// 로그인 항목은 config.json이 아니라 시스템이 상태를 갖는다. 창을 열 때 읽어
+    /// 초안으로 쓰고, 저장 시 그 시점의 시스템 상태와 다를 때만 바꾼다.
+    @State private var launchAtLogin: Bool
     @State private var errorMessage: String?
 
     init(coordinator: Coordinator) {
@@ -23,6 +26,7 @@ struct SettingsView: View {
         _promptText = State(
             initialValue: coordinator.config.systemPrompt ?? RefinementPrompt.defaultSystemPrompt
         )
+        _launchAtLogin = State(initialValue: LoginItem.isEnabled)
     }
 
     var body: some View {
@@ -131,6 +135,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("시작") {
+                Toggle("로그인할 때 자동으로 시작", isOn: $launchAtLogin)
+                Text("시스템 설정 › 일반 › 로그인 항목에서도 바꿀 수 있습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 // 버튼과 한 줄을 나눠 쓰면 긴 문구가 잘려 보이지 않는다. 폼 폭 520pt에서 버튼 옆에
                 // 남는 폭은 약 170pt인데 가장 긴 문구는 291pt다.
@@ -219,6 +229,22 @@ struct SettingsView: View {
             return
         }
         coordinator.apply(draft)
+        // 로그인 항목은 파일 저장·적용 뒤에 처리한다. 여기서 실패해도 API 키 등
+        // 다른 변경은 이미 저장된 상태여야 한다.
+        if launchAtLogin != LoginItem.isEnabled {
+            do {
+                try LoginItem.setEnabled(launchAtLogin)
+            } catch {
+                NSLog("[SettingsView] 로그인 항목 변경 실패: %@", String(describing: error))
+                errorMessage = "시작 프로그램 등록에 실패했습니다"
+                return
+            }
+            if launchAtLogin, LoginItem.requiresApproval {
+                LoginItem.openSystemSettings()
+                errorMessage = "시스템 설정의 로그인 항목에서 Untyped를 허용해 주세요"
+                return
+            }
+        }
         errorMessage = nil
     }
 }

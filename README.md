@@ -113,6 +113,7 @@ Menu → **설정…** (Settings). Changes apply on **저장** (Save) without re
 | 대상 앱 | `target_app_bundle_id` | *(absent)* | bundle ID of the app to send to, chosen with a file picker in Settings |
 | 앱으로 보내기 · 넣은 뒤 Return 누르기 | `target_app_press_return` | `false` | press Return after inserting into the target app |
 | 받아쓰기 기록 | `log_enabled` | `true` | see [Logs](#logs) |
+| 로그인할 때 자동으로 시작 | *(not in the file)* | off | macOS login item (`SMAppService`); the system owns the state, so it also appears under System Settings › General › Login Items |
 
 The system prompt is edited in place with a "기본값으로 되돌리기" (reset) button. The few-shot examples are viewable in Settings but live in code: `Sources/Untyped/Refine/RefinementPrompt.swift`.
 </details>
@@ -159,6 +160,7 @@ Sources/Untyped/
               SettingsView.swift       settings window
               OverlayPanel.swift       non-activating NSPanel — waveform, spinner, notices
               PermissionStatus.swift   mic / Accessibility checks
+              LoginItem.swift          macOS login item (launch at login)
   Core/       DictationState.swift     state machine — pure function
               Coordinator.swift        the only place that wires components together
               AppConfig.swift          config.json read/write
@@ -185,7 +187,7 @@ Dependencies point one way: `App → Core → { Input, Transcribe, Refine, Outpu
 swift test
 ```
 
-Covered: state-machine transitions, RMS, config round-trip / legacy-file compatibility / file permissions, hotkey matching, prompt composition, fallback policy, and that the transcriber does not hang on empty audio input. Audio capture, global key events, text insertion and the overlay depend on system permissions and hardware and are verified by hand.
+Covered: state-machine transitions, RMS, config round-trip / legacy-file compatibility / file permissions, hotkey matching, prompt composition, fallback policy, and that the transcriber does not hang on empty audio input. Audio capture, global key events, text insertion, the overlay and login-item registration depend on system permissions, hardware and the `.app` bundle and are verified by hand.
 
 Design notes and measurements live in `docs/superpowers/specs/` (kept locally, not tracked).
 
