@@ -6,6 +6,9 @@ struct OpenAICompatibleRefiner: TextRefiner {
     let baseURL: URL
     let model: String
     let apiKey: String?
+    let systemPrompt: String
+    let includeExamples: Bool
+    let maxTokens: Int
 
     private struct Request: Encodable {
         let model: String
@@ -45,8 +48,11 @@ struct OpenAICompatibleRefiner: TextRefiner {
         }
         // temperature 0으로 고정한다. 프롬프트가 정해지면 모델의 출력 변동이 없다.
         request.httpBody = try JSONEncoder().encode(
-            Request(model: model, messages: RefinementPrompt.messages(for: raw),
-                    temperature: 0, max_tokens: 900)
+            Request(model: model,
+                    messages: RefinementPrompt.messages(
+                        for: raw, systemPrompt: systemPrompt, includeExamples: includeExamples
+                    ),
+                    temperature: 0, max_tokens: maxTokens)
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

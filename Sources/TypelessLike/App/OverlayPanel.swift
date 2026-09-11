@@ -1,9 +1,17 @@
 import AppKit
 import SwiftUI
 
-enum OverlayStatus: Sendable {
+enum OverlayStatus: Equatable, Sendable {
     case listening
     case refining
+    /// 삽입이 끝난 뒤 잠깐 보여주는 안내. 문구는 호출자가 정한다.
+    case notice(String)
+
+    /// 안내 문구는 파형·스피너보다 넓은 자리가 필요하다.
+    var width: CGFloat {
+        if case .notice = self { return 320 }
+        return 160
+    }
 }
 
 /// 키 윈도우가 되면 원래 앱의 텍스트 포커스가 풀려 ⌘V 삽입이 엉뚱한 곳으로 간다.
@@ -23,8 +31,21 @@ final class OverlayController {
         model.level = 0
         model.isVisible = true
         if panel == nil { panel = makePanel() }
+        panel?.setContentSize(NSSize(width: status.width, height: 52))
         guard positionAtBottomCenter() else { return }
         panel?.orderFrontRegardless()
+    }
+
+    /// 안내를 잠깐 띄웠다 거둔다. 그 사이 새 녹음이 시작돼 상태가 바뀌었으면
+    /// 거두지 않는다 — 듣는 중 표시를 지워 버리면 안 된다.
+    func showNotice(_ text: String, for duration: Duration = .seconds(2.5)) {
+        let status = OverlayStatus.notice(text)
+        show(status: status)
+        Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.model.status == status else { return }
+            self.hide()
+        }
     }
 
     func update(level: Float) {
@@ -112,9 +133,14 @@ private struct OverlayView: View {
                     .stroke(WaveLayer.all[1].color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     .frame(width: 22, height: 22)
                     .rotationEffect(.degrees(seconds.truncatingRemainder(dividingBy: 1) * 360))
+            case .notice(let text):
+                Text(text)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 16)
             }
         }
-        .frame(width: 160, height: 52)
+        .frame(width: model.status.width, height: 52)
         .background(.ultraThinMaterial, in: Capsule())
     }
 }

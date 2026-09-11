@@ -9,6 +9,9 @@ actor Transcriber {
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var collector: Task<String, Error>?
+    /// 입력을 분석기로 그대로 흘려보내며 개수만 센다.
+    private var forwarder: Task<Void, Never>?
+    private var forwardedInputs = 0
 
     init(locale: Locale = Locale(identifier: "ko-KR")) {
         self.locale = locale
@@ -37,6 +40,19 @@ actor Transcriber {
         transcriber = module
         analyzer = engine
 
+        // 분석기가 버퍼를 하나도 받지 못한 채 입력이 닫히면 module.results가 끝나지
+        // 않는다. 그 상태에서 finish()가 결과를 기다리면 영영 돌아오지 않으므로
+        // 몇 개를 넘겼는지 세어 두었다가 finish()에서 그 경우를 피한다.
+        forwardedInputs = 0
+        let (counted, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        forwarder = Task { [weak self] in
+            for await input in inputSequence {
+                continuation.yield(input)
+                await self?.noteForwardedInput()
+            }
+            continuation.finish()
+        }
+
         collector = Task {
             var text = ""
             for try await result in module.results {
@@ -45,16 +61,27 @@ actor Transcriber {
             return text
         }
         do {
-            try await engine.start(inputSequence: inputSequence)
+            try await engine.start(inputSequence: counted)
         } catch {
             await teardown(for: engine)
             throw error
         }
     }
 
+    private func noteForwardedInput() {
+        forwardedInputs += 1
+    }
+
     /// 입력 스트림이 닫힌 뒤 호출한다. 남은 결과를 마무리하고 전체 텍스트를 돌려준다.
     func finish() async throws -> String {
         guard let analyzer, let collector else { return "" }
+
+        // 스트림은 이미 닫혔으므로 전달이 끝나기를 잠깐 기다리면 개수가 확정된다.
+        await forwarder?.value
+        guard forwardedInputs > 0 else {
+            await teardown(for: analyzer)
+            return ""
+        }
 
         do {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
@@ -75,6 +102,7 @@ actor Transcriber {
 
         // 핸들을 버리는 것만으로는 Task가 취소되지 않으므로 명시적으로 취소해야 한다.
         collector?.cancel()
+        forwarder?.cancel()
 
         // await 전에 프로퍼티를 nil하여 stale 쓰기 경쟁을 방지한다.
         // session 로컬이 강한 참조를 유지하므로 await 중에도 session은 유효하다.
@@ -82,6 +110,7 @@ actor Transcriber {
         self.analyzer = nil
         self.transcriber = nil
         self.collector = nil
+        self.forwarder = nil
 
         // Analyzer는 자신의 분석 작업으로 인해 자기 자신을 retain하고 있다.
         // 분석을 시작했으면 드롭만으로는 deallocate되지 않으므로 명시적으로 정리해야 한다.

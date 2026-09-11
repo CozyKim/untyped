@@ -1,15 +1,10 @@
 import AppKit
 
-/// 오른쪽 Option 단독. 단독 수식키라 다른 앱의 단축키와 충돌하지 않고
-/// flagsChanged로 눌림과 뗌을 모두 받을 수 있다.
-/// Fn은 시스템이 받아쓰기와 이모지 입력에 이미 쓰고 있어 피한다.
+/// 단독 수식키 하나의 눌림/뗌을 flagsChanged로 받아 TriggerEvent로 바꾼다.
+/// 어떤 키인지, 이벤트가 그 키의 것인지는 HotkeyKey가 판정한다.
 @MainActor
 final class HotkeyMonitor {
-    private static let rightOptionKeyCode: UInt16 = 61
-    // IOKit.framework/Headers/hidsystem/IOLLEvent.h에서 정의한 상수.
-    // modifierFlags.rawValue의 낮은 16비트에 장치 고유 수식키 비트가 있다.
-    private static let rightOptionMask: UInt = 0x40
-
+    private let key: HotkeyKey
     private let onEvent: @MainActor (TriggerEvent) -> Void
     private var monitor: Any?
     private var localMonitor: Any?
@@ -17,7 +12,8 @@ final class HotkeyMonitor {
     private var wantsMonitor = false
     private var launchObserver: (any NSObjectProtocol)?
 
-    init(onEvent: @escaping @MainActor (TriggerEvent) -> Void) {
+    init(key: HotkeyKey, onEvent: @escaping @MainActor (TriggerEvent) -> Void) {
+        self.key = key
         self.onEvent = onEvent
     }
 
@@ -77,11 +73,9 @@ final class HotkeyMonitor {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
-        guard event.keyCode == Self.rightOptionKeyCode else { return }
-        // modifierFlags.contains(.option)은 왼쪽 Option이 눌려도 true가 되어,
-        // 오른쪽 Option을 놓으면서 왼쪽 Option이 눌려 있으면 뗌을 감지하지 못한다.
-        // 장치 고유 마스크로 오른쪽 Option만 검사한다.
-        let down = event.modifierFlags.rawValue & Self.rightOptionMask != 0
+        guard let down = key.transition(
+            keyCode: event.keyCode, modifierFlags: event.modifierFlags.rawValue
+        ) else { return }
         // flagsChanged는 같은 상태를 연달아 보낼 수 있다.
         guard down != isDown else { return }
         isDown = down

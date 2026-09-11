@@ -3,19 +3,11 @@ import AppKit
 
 @main
 struct MenuBarApp: App {
-    @State private var coordinator = Coordinator(refiner: MenuBarApp.refiner)
-
-    /// 설정 파일(~/Library/Application Support/TypelessLike/config.json)에서
-    /// 주소·모델·키를 읽어 다듬기 백엔드를 하나 구성한다. Coordinator와 메뉴의
-    /// 연결 상태 확인이 이 인스턴스를 함께 쓴다.
-    private static let refiner: OpenAICompatibleRefiner = {
-        let config = RefinerConfig.loadOrCreateDefault()
-        return OpenAICompatibleRefiner(
-            baseURL: config.baseURL,
-            model: config.model,
-            apiKey: config.apiKeyOrNil
-        )
-    }()
+    @State private var coordinator = Coordinator(config: AppConfig.loadOrCreateDefault())
+    /// 설정 창을 열 때마다 값을 바꿔 SettingsView에 새 identity를 준다. macOS의
+    /// Settings 씬은 창을 닫아도 파괴하지 않고 숨기기만 할 수 있어, identity가
+    /// 그대로면 이전 초안과 에러 메시지가 다시 열었을 때 남아 있게 된다.
+    @State private var settingsGeneration = 0
 
     var body: some Scene {
         MenuBarExtra {
@@ -42,13 +34,9 @@ struct MenuBarApp: App {
             if !coordinator.refinerAvailable {
                 Divider()
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
-                Button("설정 파일 보기…") {
-                    if let url = RefinerConfig.fileURL {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
-                }
             }
             Divider()
+            OpenSettingsButton { settingsGeneration += 1 }
             Button("종료") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: iconName)
@@ -56,6 +44,11 @@ struct MenuBarApp: App {
         .onChange(of: coordinator.state) { _, _ in }
         .onChange(of: coordinator.refinerAvailable) { _, _ in }
         .commands { }
+
+        Settings {
+            SettingsView(coordinator: coordinator)
+                .id(settingsGeneration)
+        }
     }
 
     private var iconName: String {
@@ -68,7 +61,7 @@ struct MenuBarApp: App {
 
     private var statusLabel: String {
         switch coordinator.state {
-        case .idle: "대기 중 — 오른쪽 Option을 누르세요"
+        case .idle: "대기 중 — \(coordinator.config.hotkey.displayName) 키를 누르세요"
         case .holding, .toggled: "듣는 중"
         case .processing: "다듬는 중"
         }
@@ -86,5 +79,20 @@ struct MenuBarApp: App {
 
         let coordinator = coordinator
         Task { @MainActor in coordinator.start() }
+    }
+}
+
+/// LSUIElement 앱은 활성화 없이 설정 창을 열면 다른 앱 뒤에 가려질 수 있다.
+/// openSettings는 환경값이라 씬 안의 뷰에서만 읽을 수 있어 별도 뷰로 뺀다.
+private struct OpenSettingsButton: View {
+    @Environment(\.openSettings) private var openSettings
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button("설정…") {
+            onOpen()
+            NSApp.activate()
+            openSettings()
+        }
     }
 }
