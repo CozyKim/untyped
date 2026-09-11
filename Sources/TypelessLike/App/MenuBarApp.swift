@@ -9,7 +9,7 @@ struct MenuBarApp: App {
     /// 주소·모델·키를 읽어 다듬기 백엔드를 하나 구성한다. Coordinator와 메뉴의
     /// 연결 상태 확인이 이 인스턴스를 함께 쓴다.
     private static let refiner: OpenAICompatibleRefiner = {
-        let config = RefinerConfig.loadOrCreateDefault()
+        let config = AppConfig.loadOrCreateDefault()
         return OpenAICompatibleRefiner(
             baseURL: config.baseURL,
             model: config.model,
@@ -43,7 +43,7 @@ struct MenuBarApp: App {
                 Divider()
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
                 Button("설정 파일 보기…") {
-                    if let url = RefinerConfig.fileURL {
+                    if let url = AppConfig.fileURL {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
