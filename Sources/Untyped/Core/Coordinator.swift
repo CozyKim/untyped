@@ -19,6 +19,8 @@ final class Coordinator {
     private let overlay = OverlayController()
     private var refiner: any TextRefiner
     private var hotkey: HotkeyMonitor?
+    /// 앱으로 보내기 단축키. 설정에 없으면 nil.
+    private var targetAppHotkey: HotkeyMonitor?
     private var availabilityPoll: Task<Void, Never>?
     private var capture: AudioCapture?
     private var transcriber: Transcriber?
@@ -34,20 +36,27 @@ final class Coordinator {
     }
 
     func start() {
-        installHotkey(config.hotkey)
+        hotkey = makeMonitor(config.hotkey, destination: .frontmost)
+        targetAppHotkey = config.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
         restartAvailabilityPoll()
     }
 
     /// 저장된 새 설정을 즉시 반영한다. 재시작이 필요 없다.
     func apply(_ newConfig: AppConfig) {
-        let previousHotkey = config.hotkey
+        let previous = config
         config = newConfig
         refiner = Self.makeRefiner(newConfig)
         // 키가 같으면 모니터를 그대로 둔다 — 교체하면 진행 중인 hold의 뗌을 놓친다.
-        // start() 전이면 start()가 config.hotkey로 설치하므로 여기서 만들지 않는다.
-        if newConfig.hotkey != previousHotkey, let current = hotkey {
-            current.stop()
-            installHotkey(newConfig.hotkey)
+        // start() 전이면(hotkey == nil) start()가 config로 설치하므로 여기서 만들지 않는다.
+        if hotkey != nil {
+            if newConfig.hotkey != previous.hotkey {
+                hotkey?.stop()
+                hotkey = makeMonitor(newConfig.hotkey, destination: .frontmost)
+            }
+            if newConfig.targetAppHotkey != previous.targetAppHotkey {
+                targetAppHotkey?.stop()
+                targetAppHotkey = newConfig.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
+            }
         }
         restartAvailabilityPoll()
     }
@@ -62,12 +71,14 @@ final class Coordinator {
         )
     }
 
-    private func installHotkey(_ key: HotkeyKey) {
+    /// 모니터마다 출처를 붙여 둔다. 같은 handle이 두 키를 받지만, 어느 키인지는
+    /// 상태 기계가 구분해야 하므로 여기서 destination을 정해 넘긴다.
+    private func makeMonitor(_ key: HotkeyKey, destination: InsertDestination) -> HotkeyMonitor {
         let monitor = HotkeyMonitor(key: key) { [weak self] event in
-            self?.handle(event)
+            self?.handle(event, from: destination)
         }
         monitor.start()
-        hotkey = monitor
+        return monitor
     }
 
     /// 다듬기 서버 연결 가능 여부를 주기적으로 확인한다. 설정이 바뀌면 새로 시작해
@@ -87,10 +98,20 @@ final class Coordinator {
         }
     }
 
-    private func handle(_ event: TriggerEvent) {
+    private func handle(_ event: TriggerEvent, from destination: InsertDestination) {
+        // 앱으로 보내기는 대상 앱이 실행 중일 때만 시작한다. 말하기 전에 알려야 헛수고가
+        // 없으므로 녹음 시작 시점에 확인하고, reduce에 넘기지 않아 상태는 idle로 남긴다.
+        if destination == .targetApp, state == .idle, case .keyDown = event {
+            guard let bundleID = config.targetAppBundleID,
+                  TargetApp.runningApplication(bundleID: bundleID) != nil
+            else {
+                overlay.showNotice("\(targetAppName) 앱이 실행 중이 아님")
+                return
+            }
+        }
         // 토글을 끄면 "짧은 누름"이 성립하지 않아 keyUp이 항상 처리로 넘어간다 — push-to-talk.
         let threshold: Duration = config.toggleEnabled ? DictationTuning.holdThreshold : .zero
-        let (next, effect) = reduce(state, event, from: .frontmost, now: .now, threshold: threshold)
+        let (next, effect) = reduce(state, event, from: destination, now: .now, threshold: threshold)
         state = next
         switch effect {
         case .startCapture:
@@ -100,12 +121,17 @@ final class Coordinator {
             let refiner = refiner
             Task { await refiner.warmUp() }
             captureSetup = Task { await beginCapture() }
-        case .stopCaptureAndProcess:
+        case .stopCaptureAndProcess(let destination):
             overlay.show(status: .refining)
-            Task { await finishAndInsert() }
+            Task { await finishAndInsert(destination: destination) }
         case .none:
             break
         }
+    }
+
+    /// 알림 문구용. 설정에 앱이 없으면 "대상"으로 대체해 문장이 깨지지 않게 한다.
+    private var targetAppName: String {
+        config.targetAppBundleID.map(TargetApp.displayName(bundleID:)) ?? "대상"
     }
 
     private func beginCapture() async {
@@ -131,7 +157,7 @@ final class Coordinator {
         }
     }
 
-    private func finishAndInsert() async {
+    private func finishAndInsert(destination: InsertDestination) async {
         // 짧게 눌렀다 떼면 beginCapture()의 네 번의 await(포맷 조회, 마이크 시작,
         // 분석기 시작, 음소거)가 아직 안 끝난 채로 여기 먼저 도착할 수 있다. 기다리지
         // 않으면 아래 가드가 capture/transcriber를 nil로 보고 "설정 실패"로
@@ -151,9 +177,27 @@ final class Coordinator {
         let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(
             for: recorded, base: .seconds(config.refineTimeoutSeconds)
         ))
-        await TextInserter.insert(outcome.text)
+        var insertFailure: String?
+        switch destination {
+        case .frontmost:
+            await TextInserter.insert(outcome.text)
+        case .targetApp:
+            // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
+            let result: TargetApp.SendResult
+            if let bundleID = config.targetAppBundleID {
+                result = await TargetApp.send(outcome.text, toAppWithBundleID: bundleID)
+            } else {
+                result = .notRunning
+            }
+            if result != .inserted {
+                insertFailure = "\(targetAppName) 앱에 넣을 수 없음 — 삽입 안 함"
+            }
+        }
         reset()
-        if case .fallback(_, let reason) = outcome {
+        // 삽입 자체가 안 됐으면 그 사실이 폴백 이유보다 먼저다.
+        if let insertFailure {
+            overlay.showNotice(insertFailure)
+        } else if case .fallback(_, let reason) = outcome {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
         if config.logEnabled, let url = DictationLog.fileURL {
