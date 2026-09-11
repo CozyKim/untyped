@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TypelessLike
+@testable import Untyped
 
 private struct ThrowingRefiner: TextRefiner {
     var isAvailable: Bool { get async { true } }

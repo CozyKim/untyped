@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import Speech
-@testable import TypelessLike
+@testable import Untyped
 
 private actor Outcome {
     var value: String?

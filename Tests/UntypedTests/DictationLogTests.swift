@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TypelessLike
+@testable import Untyped
 
 private let seoul = TimeZone(identifier: "Asia/Seoul")!
 private let fixedDate: Date = {
@@ -13,7 +13,7 @@ private let fixedDate: Date = {
 
 private func temporaryLogURL() -> URL {
     FileManager.default.temporaryDirectory
-        .appendingPathComponent("TypelessLikeTests-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("UntypedTests-\(UUID().uuidString)", isDirectory: true)
         .appendingPathComponent("dictation.log", isDirectory: false)
 }
 

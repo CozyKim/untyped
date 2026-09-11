@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "TypelessLike",
+    name: "Untyped",
     platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(
-            name: "TypelessLike",
+            name: "Untyped",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
-            name: "TypelessLikeTests",
-            dependencies: ["TypelessLike"],
+            name: "UntypedTests",
+            dependencies: ["Untyped"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

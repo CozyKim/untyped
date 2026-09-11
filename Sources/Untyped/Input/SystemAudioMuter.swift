@@ -36,8 +36,8 @@ actor SystemAudioMuter {
         tap = tapID
 
         let composition: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "TypelessLike Mute",
-            kAudioAggregateDeviceUIDKey: "com.jaehyun.typelesslike.mute",
+            kAudioAggregateDeviceNameKey: "Untyped Mute",
+            kAudioAggregateDeviceUIDKey: "com.jaehyun.untyped.mute",
             kAudioAggregateDeviceIsPrivateKey: 1,
             kAudioAggregateDeviceTapListKey: [[
                 kAudioSubTapUIDKey: description.uuid.uuidString,

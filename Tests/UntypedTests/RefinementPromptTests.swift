@@ -1,5 +1,5 @@
 import Testing
-@testable import TypelessLike
+@testable import Untyped
 
 @Test func systemPromptCarriesFourRulesAndGlossary() {
     let messages = RefinementPrompt.messages(

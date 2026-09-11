@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TypelessLike
+@testable import Untyped
 
 private let t0 = ContinuousClock.now
 private let th = Duration.milliseconds(250)

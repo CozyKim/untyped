@@ -1,6 +1,6 @@
 import AppKit
 import Testing
-@testable import TypelessLike
+@testable import Untyped
 
 /// 복원 예약이 전역 상태(직전 삽입의 복원 작업)를 공유하므로 병렬 실행하면 서로 간섭한다.
 @Suite(.serialized)

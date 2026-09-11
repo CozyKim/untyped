@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import TypelessLike
+@testable import Untyped
 
 private func near(_ a: CGFloat, _ b: CGFloat) -> Bool {
     abs(a - b) < 1e-6

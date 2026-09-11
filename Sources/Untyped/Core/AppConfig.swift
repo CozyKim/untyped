@@ -1,6 +1,6 @@
 import Foundation
 
-/// 사용자 설정. ~/Library/Application Support/TypelessLike/config.json에서 읽고 쓴다.
+/// 사용자 설정. ~/Library/Application Support/Untyped/config.json에서 읽고 쓴다.
 ///
 /// GUI 앱은 셸 환경변수를 물려받지 않으므로 API 키 같은 값은 환경변수로 전달할
 /// 수 없다. 사용자가 직접 편집할 수 있는 파일로 대신하고, 설정 창은 이 파일의
@@ -57,7 +57,7 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// 설정 파일의 실제 경로. 읽기·쓰기와 설정 창의 Finder 열기가 함께 쓴다.
     static var fileURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("TypelessLike", isDirectory: true)
+            .appendingPathComponent("Untyped", isDirectory: true)
             .appendingPathComponent("config.json", isDirectory: false)
     }
 

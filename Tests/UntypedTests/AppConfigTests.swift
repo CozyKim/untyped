@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TypelessLike
+@testable import Untyped
 
 private let sample = AppConfig(
     baseURL: URL(string: "http://localhost:11434/v1")!,
@@ -12,7 +12,7 @@ private let sample = AppConfig(
 
 private func temporaryFileURL() -> URL {
     FileManager.default.temporaryDirectory
-        .appendingPathComponent("TypelessLikeTests-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("UntypedTests-\(UUID().uuidString)", isDirectory: true)
         .appendingPathComponent("config.json", isDirectory: false)
 }
 

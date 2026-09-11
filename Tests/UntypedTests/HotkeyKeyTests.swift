@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import TypelessLike
+@testable import Untyped
 
 @Test(arguments: HotkeyKey.allCases)
 func ownKeyCodeWithDeviceBitSetIsDown(key: HotkeyKey) {
