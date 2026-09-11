@@ -41,8 +41,9 @@ enum TextInserter {
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    /// 완료된 텍스트를 클립보드 경유로 삽입한다. 붙여넣기 이벤트를 보낸 직후 반환하며
-    /// 클립보드 복원은 `restoreDelay` 뒤에 따로 이루어진다.
+    /// 완료된 텍스트를 클립보드 경유로 삽입한다. 붙여넣기 이벤트를 보낸 뒤 — `pressReturn`이면
+    /// 텍스트가 나타난 것을 확인하고 Return까지 보낸 뒤 — 반환하며, 클립보드 복원은
+    /// `restoreDelay` 뒤에 따로 이루어진다.
     /// 동시 호출은 인정되지 않는다. 두 호출이 겹치면 각 호출이 자신의 변경 수 검사로만
     /// 보호되므로 첫 번째 호출의 받아쓰기 내용이 남거나 클립보드가 완전히 비게 된다.
     /// 호출자는 이 함수의 동시성을 직렬화해야 한다.
@@ -139,15 +140,20 @@ enum TextInserter {
 
     /// 앞에 있는 앱의 포커스된 요소가 노출하는 문자열 값. 텍스트 입력창이 아니거나 앱이
     /// 접근성 값을 제공하지 않으면 nil.
+    /// 접근성 호출은 대상 앱 프로세스로 가는 동기 IPC라, 앱이 멈춰 있으면 시스템 기본
+    /// 타임아웃(수 초)까지 메인 액터가 막힌다. 요소마다 짧은 타임아웃을 걸어 상한을 지킨다.
     private static func focusedElementValue() -> String? {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
         let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.1)
         var element: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &element) == .success,
               let element
         else { return nil }
+        let focused = element as! AXUIElement
+        AXUIElementSetMessagingTimeout(focused, 0.1)
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element as! AXUIElement, kAXValueAttribute as CFString, &value) == .success
+        guard AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &value) == .success
         else { return nil }
         return value as? String
     }
