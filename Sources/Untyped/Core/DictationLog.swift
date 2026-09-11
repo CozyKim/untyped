@@ -15,7 +15,7 @@ enum DictationLog {
 
     static func entry(
         raw: String, outcome: RefineOutcome, recorded: Duration,
-        at date: Date, timeZone: TimeZone = .current
+        at date: Date, timeZone: TimeZone = .current, cause: String? = nil
     ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -27,9 +27,11 @@ enum DictationLog {
         case .refined: "다듬음"
         case .fallback(_, let reason): "원본 (\(reason.label))"
         }
+        // 원인은 헤더 바로 아래에 둔다. 무슨 일이 있었는지를 본문(STT·결과)보다 먼저 읽게 한다.
+        let causeLine = cause.map { "원인: \($0)\n" } ?? ""
         return """
         [\(formatter.string(from: date))] 녹음 \(String(format: "%.1f", seconds))초 · \(status)
-        STT : \(raw)
+        \(causeLine)STT : \(raw)
         결과: \(outcome.text)
 
         """

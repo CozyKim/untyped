@@ -19,6 +19,8 @@ final class Coordinator {
     private let overlay = OverlayController()
     private var refiner: any TextRefiner
     private var hotkey: HotkeyMonitor?
+    /// 앱으로 보내기 단축키. 설정에 없으면 nil.
+    private var targetAppHotkey: HotkeyMonitor?
     private var availabilityPoll: Task<Void, Never>?
     private var capture: AudioCapture?
     private var transcriber: Transcriber?
@@ -27,6 +29,12 @@ final class Coordinator {
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
     /// "아직 안 끝남"을 보고 오판하지 않도록 이 핸들을 먼저 기다리게 한다.
     private var captureSetup: Task<Void, Never>?
+    /// 이번 녹음의 예열 요청 시각. 다듬기가 시간 초과됐을 때 콜드 스타트(모델 로드) 때문이었는지
+    /// 로그에 적기 위해 시작과 완료를 기억한다.
+    private var warmUpStartedAt: ContinuousClock.Instant?
+    private var warmUpFinishedAt: ContinuousClock.Instant?
+    /// 직전 로그 쓰기. 다음 쓰기가 이걸 기다려 파일에 순서대로 붙는다.
+    private var logWrite: Task<Void, Never>?
 
     init(config: AppConfig) {
         self.config = config
@@ -34,20 +42,27 @@ final class Coordinator {
     }
 
     func start() {
-        installHotkey(config.hotkey)
+        hotkey = makeMonitor(config.hotkey, destination: .frontmost)
+        targetAppHotkey = config.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
         restartAvailabilityPoll()
     }
 
     /// 저장된 새 설정을 즉시 반영한다. 재시작이 필요 없다.
     func apply(_ newConfig: AppConfig) {
-        let previousHotkey = config.hotkey
+        let previous = config
         config = newConfig
         refiner = Self.makeRefiner(newConfig)
         // 키가 같으면 모니터를 그대로 둔다 — 교체하면 진행 중인 hold의 뗌을 놓친다.
-        // start() 전이면 start()가 config.hotkey로 설치하므로 여기서 만들지 않는다.
-        if newConfig.hotkey != previousHotkey, let current = hotkey {
-            current.stop()
-            installHotkey(newConfig.hotkey)
+        // start() 전이면(hotkey == nil) start()가 config로 설치하므로 여기서 만들지 않는다.
+        if hotkey != nil {
+            if newConfig.hotkey != previous.hotkey {
+                hotkey?.stop()
+                hotkey = makeMonitor(newConfig.hotkey, destination: .frontmost)
+            }
+            if newConfig.targetAppHotkey != previous.targetAppHotkey {
+                targetAppHotkey?.stop()
+                targetAppHotkey = newConfig.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
+            }
         }
         restartAvailabilityPoll()
     }
@@ -62,12 +77,14 @@ final class Coordinator {
         )
     }
 
-    private func installHotkey(_ key: HotkeyKey) {
+    /// 모니터마다 출처를 붙여 둔다. 같은 handle이 두 키를 받지만, 어느 키인지는
+    /// 상태 기계가 구분해야 하므로 여기서 destination을 정해 넘긴다.
+    private func makeMonitor(_ key: HotkeyKey, destination: InsertDestination) -> HotkeyMonitor {
         let monitor = HotkeyMonitor(key: key) { [weak self] event in
-            self?.handle(event)
+            self?.handle(event, from: destination)
         }
         monitor.start()
-        hotkey = monitor
+        return monitor
     }
 
     /// 다듬기 서버 연결 가능 여부를 주기적으로 확인한다. 설정이 바뀌면 새로 시작해
@@ -87,10 +104,20 @@ final class Coordinator {
         }
     }
 
-    private func handle(_ event: TriggerEvent) {
+    private func handle(_ event: TriggerEvent, from destination: InsertDestination) {
+        // 앱으로 보내기는 대상 앱이 실행 중일 때만 시작한다. 말하기 전에 알려야 헛수고가
+        // 없으므로 녹음 시작 시점에 확인하고, reduce에 넘기지 않아 상태는 idle로 남긴다.
+        if destination == .targetApp, state == .idle, case .keyDown = event {
+            guard let bundleID = config.targetAppBundleID,
+                  TargetApp.runningApplication(bundleID: bundleID) != nil
+            else {
+                overlay.showNotice("\(targetAppName) 앱이 실행 중이 아님")
+                return
+            }
+        }
         // 토글을 끄면 "짧은 누름"이 성립하지 않아 keyUp이 항상 처리로 넘어간다 — push-to-talk.
         let threshold: Duration = config.toggleEnabled ? DictationTuning.holdThreshold : .zero
-        let (next, effect) = reduce(state, event, now: .now, threshold: threshold)
+        let (next, effect) = reduce(state, event, from: destination, now: .now, threshold: threshold)
         state = next
         switch effect {
         case .startCapture:
@@ -98,14 +125,27 @@ final class Coordinator {
             // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
             let refiner = refiner
-            Task { await refiner.warmUp() }
+            let startedAt = ContinuousClock.now
+            warmUpStartedAt = startedAt
+            warmUpFinishedAt = nil
+            Task { [weak self] in
+                await refiner.warmUp()
+                // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
+                guard let self, self.warmUpStartedAt == startedAt else { return }
+                self.warmUpFinishedAt = .now
+            }
             captureSetup = Task { await beginCapture() }
-        case .stopCaptureAndProcess:
+        case .stopCaptureAndProcess(let destination):
             overlay.show(status: .refining)
-            Task { await finishAndInsert() }
+            Task { await finishAndInsert(destination: destination) }
         case .none:
             break
         }
+    }
+
+    /// 알림 문구용. 설정에 앱이 없으면 "대상"으로 대체해 문장이 깨지지 않게 한다.
+    private var targetAppName: String {
+        config.targetAppBundleID.map(TargetApp.displayName(bundleID:)) ?? "대상"
     }
 
     private func beginCapture() async {
@@ -131,7 +171,7 @@ final class Coordinator {
         }
     }
 
-    private func finishAndInsert() async {
+    private func finishAndInsert(destination: InsertDestination) async {
         // 짧게 눌렀다 떼면 beginCapture()의 네 번의 await(포맷 조회, 마이크 시작,
         // 분석기 시작, 음소거)가 아직 안 끝난 채로 여기 먼저 도착할 수 있다. 기다리지
         // 않으면 아래 가드가 capture/transcriber를 nil로 보고 "설정 실패"로
@@ -148,24 +188,83 @@ final class Coordinator {
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
         guard !raw.isEmpty else { reset(); return }
 
-        let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(
-            for: recorded, base: .seconds(config.refineTimeoutSeconds)
-        ))
-        await TextInserter.insert(outcome.text)
+        // 삽입 중에 설정이 교체돼도 로그는 실제로 다듬기를 시도한 서버를 가리켜야 한다.
+        let refiner = refiner
+        let baseURL = config.baseURL
+        let timeout = refineTimeout(for: recorded, base: .seconds(config.refineTimeoutSeconds))
+        let outcome = await refineOrFallback(raw, using: refiner, timeout: timeout)
+        // 예열 상태는 다듬기가 끝난 직후에 읽는다. 로그는 삽입 뒤에 쓰는데 그때는 다음 녹음이
+        // 시작돼 예열 시각이 덮여 있을 수 있다.
+        let warmUp = warmUpState(now: .now)
+        let loggedAt = Date()
+        let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
+        var insertFailure: String?
+        switch destination {
+        case .frontmost:
+            await TextInserter.insert(outcome.text, pressReturn: pressReturn)
+        case .targetApp:
+            // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
+            let result: TargetApp.SendResult
+            if let bundleID = config.targetAppBundleID {
+                result = await TargetApp.send(outcome.text, toAppWithBundleID: bundleID, pressReturn: pressReturn)
+            } else {
+                result = .notRunning
+            }
+            if result != .inserted {
+                insertFailure = "\(targetAppName) 앱에 넣을 수 없음 — 삽입 안 함"
+            }
+        }
         reset()
-        if case .fallback(_, let reason) = outcome {
+        // 삽입 자체가 안 됐으면 그 사실이 폴백 이유보다 먼저다.
+        if let insertFailure {
+            overlay.showNotice(insertFailure)
+        } else if case .fallback(_, let reason) = outcome {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
         if config.logEnabled, let url = DictationLog.fileURL {
-            let entry = DictationLog.entry(raw: raw, outcome: outcome, recorded: recorded, at: .now)
-            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다.
-            Task.detached {
+            let cause = await fallbackCause(
+                for: outcome, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
+            )
+            let entry = DictationLog.entry(
+                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause
+            )
+            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다. 다만 연결
+            // 확인이 최대 2초라 다음 받아쓰기의 로그가 먼저 도착할 수 있으므로, 직전 쓰기를
+            // 기다려 순서를 지킨다 — FileHandle의 seek+write는 두 작업이 겹치면 서로 덮어쓴다.
+            let previous = logWrite
+            logWrite = Task.detached {
+                await previous?.value
                 do {
                     try DictationLog.append(entry, to: url)
                 } catch {
                     NSLog("[Coordinator] 로그 기록 실패: %@", String(describing: error))
                 }
             }
+        }
+    }
+
+    private func warmUpState(now: ContinuousClock.Instant) -> WarmUpState {
+        guard let startedAt = warmUpStartedAt else { return .notStarted }
+        if let finishedAt = warmUpFinishedAt { return .finished(in: finishedAt - startedAt) }
+        return .running(for: now - startedAt)
+    }
+
+    /// 폴백일 때만 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결 확인(최대 2초)은 삽입과
+    /// 상태 초기화가 끝난 뒤에 하므로 사용자를 기다리게 하지 않는다.
+    private func fallbackCause(
+        for outcome: RefineOutcome, timeout: Duration, warmUp: WarmUpState,
+        refiner: any TextRefiner, baseURL: URL
+    ) async -> String? {
+        guard case .fallback(_, let reason) = outcome else { return nil }
+        switch reason {
+        case .timeout, .failed:
+            let reachable = await refiner.isAvailable
+            return Untyped.fallbackCause(
+                reason: reason, timeout: timeout, serverReachable: reachable,
+                warmUp: warmUp, baseURL: baseURL
+            )
+        case .noRefiner, .truncated, .emptyResult:
+            return nil
         }
     }
 

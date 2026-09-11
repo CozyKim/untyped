@@ -27,6 +27,7 @@ private func temporaryFileURL() -> URL {
     #expect(Set(object.keys) == [
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
+        "press_return", "target_app_press_return", "press_return_on_fallback",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -176,4 +177,125 @@ private func temporaryFileURL() -> URL {
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     #expect(object["refine_timeout_seconds"] as? Int == 10)
     #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+}
+
+private let sampleWithTargetApp: AppConfig = {
+    var config = sample
+    config.targetAppHotkey = .rightControl
+    config.targetAppBundleID = "com.apple.TextEdit"
+    return config
+}()
+
+@Test func targetAppFieldsRoundTripAndUseSnakeCaseKeys() throws {
+    let data = try JSONEncoder().encode(sampleWithTargetApp)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == sampleWithTargetApp)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["target_app_hotkey"] as? String == "right_control")
+    #expect(object["target_app_bundle_id"] as? String == "com.apple.TextEdit")
+}
+
+@Test func targetAppFieldsAreOmittedWhenUnset() throws {
+    // 기능을 쓰지 않는 사용자의 파일에 새 키가 생기면 안 된다.
+    let data = try JSONEncoder().encode(sample)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["target_app_hotkey"] == nil)
+    #expect(object["target_app_bundle_id"] == nil)
+}
+
+@Test func legacyFileWithoutTargetAppFieldsReadsNil() throws {
+    let json = """
+    {"api_key":"sk-legacy","base_url":"http://127.0.0.1:8081/v1","model":"m","hotkey":"right_option"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == nil)
+    #expect(decoded.apiKey == "sk-legacy")
+}
+
+@Test func unknownTargetAppHotkeyReadsNilAndKeepsBundleID() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","target_app_hotkey":"banana","target_app_bundle_id":"com.apple.TextEdit"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == "com.apple.TextEdit")
+}
+
+@Test func targetAppHotkeySameAsPrimaryReadsNil() throws {
+    // 파일을 손으로 고쳐 두 단축키를 같게 만든 경우. 같은 키에 모니터 두 개가 붙으면
+    // 한 번의 눌림이 두 이벤트로 들어오므로 앱으로 보내기 쪽을 꺼 버린다.
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","hotkey":"right_command","target_app_hotkey":"right_command","target_app_bundle_id":"com.apple.TextEdit"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.hotkey == .rightCommand)
+    #expect(decoded.targetAppHotkey == nil)
+    #expect(decoded.targetAppBundleID == "com.apple.TextEdit")
+}
+
+@Test func emptyTargetAppBundleIDReadsNil() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","target_app_bundle_id":""}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.targetAppBundleID == nil)
+}
+
+@Test func pressReturnFieldsRoundTripAndDefaultToFalse() throws {
+    var config = sample
+    config.pressReturn = true
+    config.targetAppPressReturn = true
+    config.pressReturnOnFallback = true
+    let data = try JSONEncoder().encode(config)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == config)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["press_return"] as? Bool == true)
+    #expect(object["target_app_press_return"] as? Bool == true)
+    #expect(object["press_return_on_fallback"] as? Bool == true)
+
+    // 필드가 없는 기존 파일은 셋 다 꺼진 것으로 읽는다.
+    let legacy = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(legacy.utf8))
+    #expect(decoded.pressReturn == false)
+    #expect(decoded.targetAppPressReturn == false)
+    #expect(decoded.pressReturnOnFallback == false)
+}
+
+@Test func pressesReturnOnlyWhenPathToggleIsOn() {
+    var config = sample
+    let refined = RefineOutcome.refined("x")
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == false)
+
+    config.pressReturn = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == true)
+    // 경로별 토글은 서로 독립이다.
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == false)
+
+    config.pressReturn = false
+    config.targetAppPressReturn = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: refined) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: refined) == true)
+}
+
+@Test func fallbackPressesReturnOnlyWithFallbackToggle() {
+    var config = sample
+    config.pressReturn = true
+    config.targetAppPressReturn = true
+    let fallback = RefineOutcome.fallback("x", .timeout)
+    // 원본 전사에는 군말·정정이 남아 있을 수 있어 기본으로는 보내지 않는다.
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
+
+    config.pressReturnOnFallback = true
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == true)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == true)
+
+    // 원본-삽입 토글만으로는 Return을 누르지 않는다. 경로별 토글이 먼저다.
+    config.pressReturn = false
+    config.targetAppPressReturn = false
+    #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == false)
+    #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
 }

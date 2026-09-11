@@ -47,7 +47,7 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 
 @Test func throwingRefinerFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: ThrowingRefiner(), timeout: .seconds(5))
-    #expect(out == .fallback("원본 전사", .failed))
+    #expect(out == .fallback("원본 전사", .failed(detail: "연결 거부 — 로컬 LLM 서버가 실행 중이 아님")))
 }
 
 @Test func timeoutFallsBackToRawText() async {
@@ -118,4 +118,18 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 @Test func outcomeTextIsWhatGetsInserted() {
     #expect(RefineOutcome.refined("다듬음").text == "다듬음")
     #expect(RefineOutcome.fallback("원본", .timeout).text == "원본")
+}
+
+@Test func failureDetailNamesTheActualCause() {
+    // 로그에서 "서버 오류"만 보고는 서버가 꺼진 건지 응답이 이상한 건지 알 수 없다.
+    #expect(failureDetail(of: URLError(.cannotConnectToHost)) == "연결 거부 — 로컬 LLM 서버가 실행 중이 아님")
+    #expect(failureDetail(of: URLError(.networkConnectionLost)) == "연결 끊김 — 요청 도중 서버가 연결을 닫음(크래시·재시작 또는 keep-alive 만료)")
+    #expect(failureDetail(of: URLError(.timedOut)) == "요청 시간 초과 (URLSession)")
+    #expect(failureDetail(of: RefinerError.badStatus(500)) == "HTTP 500")
+    #expect(failureDetail(of: RefinerError.emptyResponse) == "응답에 choices가 없음")
+    #expect(failureDetail(of: DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "x"))) == "응답 형식 오류 — JSON 해석 실패")
+}
+
+@Test func failedReasonLabelIgnoresDetail() {
+    #expect(FallbackReason.failed(detail: "HTTP 500").label == "다듬기 서버 오류")
 }
