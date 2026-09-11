@@ -15,6 +15,13 @@ struct AppConfig: Codable, Equatable, Sendable {
     var apiKey: String
     var hotkey: HotkeyKey
     var toggleEnabled: Bool
+    /// nil이면 앱의 기본 프롬프트를 쓴다. 기본값과 같은 텍스트는 저장하지 않는다 —
+    /// 파일에 박아 두면 나중에 기본 프롬프트가 개선돼도 한 번도 손대지 않은 사용자가
+    /// 옛 프롬프트에 묶인다.
+    var systemPrompt: String? = nil
+    /// few-shot 예시를 프롬프트 뒤에 붙일지. 성격이 다른 프롬프트(예: 번역)는
+    /// 예시가 지시보다 세게 작용해 무시되므로 끌 수 있어야 한다.
+    var includeExamples: Bool = true
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -22,6 +29,8 @@ struct AppConfig: Codable, Equatable, Sendable {
         case apiKey = "api_key"
         case hotkey
         case toggleEnabled = "toggle_enabled"
+        case systemPrompt = "system_prompt"
+        case includeExamples = "include_examples"
     }
 
     static let defaultConfig = AppConfig(
@@ -91,7 +100,8 @@ struct AppConfig: Codable, Equatable, Sendable {
 }
 
 extension AppConfig {
-    /// hotkey와 toggle_enabled는 나중에 추가된 필드라 기존 파일에는 없을 수 있다.
+    /// hotkey·toggle_enabled·system_prompt·include_examples는 나중에 추가된 필드라
+    /// 기존 파일에는 없을 수 있다.
     /// hotkey가 모르는 문자열이어도 기본값으로 읽는다 — 이 필드 하나 때문에 파일
     /// 전체가 거부되어 API 키까지 기본값으로 대체되면 안 된다.
     ///
@@ -105,5 +115,8 @@ extension AppConfig {
         hotkey = rawHotkey.flatMap(HotkeyKey.init(rawValue:)) ?? Self.defaultConfig.hotkey
         toggleEnabled = try container.decodeIfPresent(Bool.self, forKey: .toggleEnabled)
             ?? Self.defaultConfig.toggleEnabled
+        systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        includeExamples = try container.decodeIfPresent(Bool.self, forKey: .includeExamples)
+            ?? Self.defaultConfig.includeExamples
     }
 }

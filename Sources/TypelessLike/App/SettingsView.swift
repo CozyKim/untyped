@@ -10,12 +10,18 @@ struct SettingsView: View {
     @State private var draft: AppConfig
     /// baseURL은 URL 타입이라 편집 중에는 문자열로 들고 저장 시점에 파싱한다.
     @State private var baseURLText: String
+    /// systemPrompt는 nil이 "기본값"이라 편집 중에는 실제 텍스트로 들고 저장 시점에
+    /// 기본값과 비교한다.
+    @State private var promptText: String
     @State private var errorMessage: String?
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
         _draft = State(initialValue: coordinator.config)
         _baseURLText = State(initialValue: coordinator.config.baseURL.absoluteString)
+        _promptText = State(
+            initialValue: coordinator.config.systemPrompt ?? RefinementPrompt.defaultSystemPrompt
+        )
     }
 
     var body: some View {
@@ -24,6 +30,21 @@ struct SettingsView: View {
                 TextField("서버 주소", text: $baseURLText)
                 TextField("모델", text: $draft.model)
                 SecureField("API 키", text: $draft.apiKey)
+            }
+            Section("다듬기 프롬프트") {
+                TextEditor(text: $promptText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 180)
+                Toggle("기본 예시 포함", isOn: $draft.includeExamples)
+                Text("예시는 기본 규칙(정정 삭제, 군말 제거, 용어 복원)을 보여줍니다. 번역처럼 성격이 다른 지시를 쓸 때는 끄세요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("기본값으로 되돌리기") {
+                        promptText = RefinementPrompt.defaultSystemPrompt
+                    }
+                }
             }
             Section("받아쓰기") {
                 Picker("단축키", selection: $draft.hotkey) {
@@ -51,12 +72,11 @@ struct SettingsView: View {
                         }
                     }
                     Button("저장", action: save)
-                        .keyboardShortcut(.defaultAction)
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
+        .frame(width: 520)
     }
 
     private func save() {
@@ -69,6 +89,12 @@ struct SettingsView: View {
             return
         }
         draft.baseURL = url
+        let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            errorMessage = "프롬프트가 비어 있습니다"
+            return
+        }
+        draft.systemPrompt = prompt == RefinementPrompt.defaultSystemPrompt ? nil : prompt
         do {
             try AppConfig.save(draft)
         } catch {

@@ -24,7 +24,7 @@ private func temporaryFileURL() -> URL {
 @Test func encodedKeysAreSnakeCase() throws {
     let data = try JSONEncoder().encode(sample)
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    #expect(Set(object.keys) == ["base_url", "model", "api_key", "hotkey", "toggle_enabled"])
+    #expect(Set(object.keys) == ["base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples"])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
     #expect(object["toggle_enabled"] as? Bool == false)
@@ -103,4 +103,35 @@ private func temporaryFileURL() -> URL {
     try Data("{not json".utf8).write(to: url)
 
     #expect(AppConfig.load(from: url) == nil)
+}
+
+// system_prompt는 기본값과 다를 때만 저장한다. 기본값을 파일에 박아 두면 나중에 앱의
+// 기본 프롬프트가 개선돼도 한 번도 손대지 않은 사용자가 옛 프롬프트에 묶인다.
+@Test func defaultSystemPromptIsNotWrittenToFile() throws {
+    let data = try JSONEncoder().encode(sample)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["system_prompt"] == nil)
+    #expect(object["include_examples"] as? Bool == true)
+}
+
+@Test func customSystemPromptAndExampleFlagRoundTrip() throws {
+    var custom = sample
+    custom.systemPrompt = "받아쓰기 원문을 영어로 번역한다."
+    custom.includeExamples = false
+
+    let data = try JSONEncoder().encode(custom)
+
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["system_prompt"] as? String == "받아쓰기 원문을 영어로 번역한다.")
+    #expect(object["include_examples"] as? Bool == false)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+}
+
+@Test func fileWithoutPromptFieldsUsesDefaultPromptAndExamples() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m","hotkey":"right_option","toggle_enabled":true}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.systemPrompt == nil)
+    #expect(decoded.includeExamples == true)
 }
