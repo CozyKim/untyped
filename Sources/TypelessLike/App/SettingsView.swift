@@ -34,6 +34,10 @@ struct SettingsView: View {
                 Text("다듬은 결과가 이보다 길면 다듬지 않고 원본 전사를 넣습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                TextField("다듬기 대기 시간 (초)", value: $draft.refineTimeoutSeconds, format: .number)
+                Text("여기에 녹음 길이의 40%가 더해집니다. 그 안에 응답이 없으면 원본 전사를 넣습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("다듬기 프롬프트") {
                 TextEditor(text: $promptText)
@@ -109,6 +113,10 @@ struct SettingsView: View {
         draft.baseURL = url
         guard draft.maxTokens >= 1 else {
             errorMessage = "최대 출력 토큰은 1 이상이어야 합니다"
+            return
+        }
+        guard draft.refineTimeoutSeconds >= 1 else {
+            errorMessage = "다듬기 대기 시간은 1초 이상이어야 합니다"
             return
         }
         let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)

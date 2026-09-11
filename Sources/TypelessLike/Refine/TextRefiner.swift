@@ -6,9 +6,11 @@ protocol TextRefiner: Sendable {
     func refine(_ raw: String) async throws -> String
 }
 
-/// 녹음 길이에 비례하는 타임아웃. 고정값을 쓰면 긴 발화가 항상 폴백된다.
-func refineTimeout(for recorded: Duration) -> Duration {
-    .seconds(4) + recorded * 0.4
+/// 녹음 길이에 비례하는 타임아웃. 고정값만 쓰면 긴 발화가 항상 폴백된다.
+/// 기본값(base)은 모델 로드·프리필 같은 고정 비용 몫이라 녹음 길이와 무관하게
+/// 사용자가 조절한다 — 메모리가 부족해 모델이 스왑에서 돌아오는 기기에서는 이 몫이 커진다.
+func refineTimeout(for recorded: Duration, base: Duration) -> Duration {
+    base + recorded * 0.4
 }
 
 /// 원본 전사를 넣게 된 이유. 오버레이 알림과 로그가 같은 문구를 쓴다.

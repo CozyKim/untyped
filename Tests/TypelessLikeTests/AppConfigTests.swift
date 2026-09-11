@@ -26,7 +26,7 @@ private func temporaryFileURL() -> URL {
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     #expect(Set(object.keys) == [
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
-        "max_tokens", "log_enabled",
+        "max_tokens", "log_enabled", "refine_timeout_seconds",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -158,5 +158,22 @@ private func temporaryFileURL() -> URL {
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     #expect(object["max_tokens"] as? Int == 2000)
     #expect(object["log_enabled"] as? Bool == false)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+}
+
+@Test func fileWithoutRefineTimeoutUsesFourSeconds() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.refineTimeoutSeconds == 4)
+}
+
+@Test func refineTimeoutRoundTrips() throws {
+    var custom = sample
+    custom.refineTimeoutSeconds = 10
+    let data = try JSONEncoder().encode(custom)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["refine_timeout_seconds"] as? Int == 10)
     #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
 }

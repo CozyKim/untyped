@@ -26,6 +26,8 @@ struct AppConfig: Codable, Equatable, Sendable {
     var maxTokens: Int = 900
     /// 받아쓰기마다 원문과 결과를 로그 파일에 남길지. 말한 내용이 전부 남으므로 끌 수 있다.
     var logEnabled: Bool = true
+    /// 다듬기 대기 시간의 기본 초. 여기에 녹음 길이의 40%가 더해진다.
+    var refineTimeoutSeconds: Int = 4
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -37,6 +39,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         case includeExamples = "include_examples"
         case maxTokens = "max_tokens"
         case logEnabled = "log_enabled"
+        case refineTimeoutSeconds = "refine_timeout_seconds"
     }
 
     static let defaultConfig = AppConfig(
@@ -127,5 +130,7 @@ extension AppConfig {
             ?? Self.defaultConfig.maxTokens
         logEnabled = try container.decodeIfPresent(Bool.self, forKey: .logEnabled)
             ?? Self.defaultConfig.logEnabled
+        refineTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .refineTimeoutSeconds)
+            ?? Self.defaultConfig.refineTimeoutSeconds
     }
 }

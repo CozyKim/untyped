@@ -99,9 +99,14 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 }
 
 @Test func timeoutGrowsWithRecordingLength() {
-    // 4초 + 길이 * 0.4
-    #expect(refineTimeout(for: .seconds(5)) == .seconds(6))
-    #expect(refineTimeout(for: .seconds(30)) == .seconds(16))
+    // 기본 + 길이 * 0.4
+    #expect(refineTimeout(for: .seconds(5), base: .seconds(4)) == .seconds(6))
+    #expect(refineTimeout(for: .seconds(30), base: .seconds(4)) == .seconds(16))
+}
+
+@Test func timeoutBaseIsConfigurable() {
+    // 모델이 스왑에서 돌아오는 고정 비용은 녹음 길이와 무관하므로 기본값을 따로 올릴 수 있어야 한다.
+    #expect(refineTimeout(for: .seconds(5), base: .seconds(10)) == .seconds(12))
 }
 
 @Test func truncatedResultFallsBackWithItsOwnReason() async {

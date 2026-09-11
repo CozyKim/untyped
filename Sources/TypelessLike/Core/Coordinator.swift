@@ -138,7 +138,9 @@ final class Coordinator {
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
         guard !raw.isEmpty else { reset(); return }
 
-        let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(for: recorded))
+        let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(
+            for: recorded, base: .seconds(config.refineTimeoutSeconds)
+        ))
         await TextInserter.insert(outcome.text)
         reset()
         if case .fallback(_, let reason) = outcome {
