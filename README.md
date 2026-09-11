@@ -6,7 +6,7 @@ English | [한국어](README.ko.md)
 
 **Speak, and a cleaned-up sentence lands at your cursor.** A macOS menu-bar dictation app that runs entirely on your machine — on-device speech recognition plus a local LLM that strips fillers, applies your mid-sentence corrections, and restores the English tech terms you said in Korean.
 
-![Platform](https://img.shields.io/badge/platform-macOS%2026-blue) ![Swift](https://img.shields.io/badge/Swift-6.3-orange) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![Platform](https://img.shields.io/badge/platform-macOS%2026-blue) ![Swift](https://img.shields.io/badge/Swift-6.3-orange) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ```
 You hold the key and say:
@@ -181,4 +181,4 @@ Issues and pull requests are welcome. Conventions: no external SwiftPM dependenc
 
 ## License
 
-No license has been chosen yet.
+[MIT](LICENSE)

@@ -6,7 +6,7 @@
 
 **말하면 다듬어진 문장이 커서 위치에 들어갑니다.** 전부 내 Mac 안에서 도는 macOS 메뉴바 받아쓰기 앱 — 온디바이스 음성 인식에 로컬 LLM을 더해 군말을 지우고, 말하다 고친 내용을 반영하고, 한국어로 발음한 개발 용어를 영문으로 되돌립니다.
 
-![Platform](https://img.shields.io/badge/platform-macOS%2026-blue) ![Swift](https://img.shields.io/badge/Swift-6.3-orange) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![Platform](https://img.shields.io/badge/platform-macOS%2026-blue) ![Swift](https://img.shields.io/badge/Swift-6.3-orange) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ```
 키를 누른 채 말한다:
@@ -179,4 +179,4 @@ swift test
 
 ## 라이선스
 
-아직 정하지 않았습니다.
+[MIT](LICENSE)
