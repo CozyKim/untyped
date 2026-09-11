@@ -24,7 +24,10 @@ private func temporaryFileURL() -> URL {
 @Test func encodedKeysAreSnakeCase() throws {
     let data = try JSONEncoder().encode(sample)
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    #expect(Set(object.keys) == ["base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples"])
+    #expect(Set(object.keys) == [
+        "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
+        "max_tokens", "log_enabled",
+    ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
     #expect(object["toggle_enabled"] as? Bool == false)
@@ -134,4 +137,26 @@ private func temporaryFileURL() -> URL {
     let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
     #expect(decoded.systemPrompt == nil)
     #expect(decoded.includeExamples == true)
+}
+
+@Test func fileWithoutMaxTokensAndLogFlagUsesDefaults() throws {
+    let json = """
+    {"api_key":"k","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.maxTokens == 900)
+    #expect(decoded.logEnabled == true)
+}
+
+@Test func maxTokensAndLogFlagRoundTrip() throws {
+    var custom = sample
+    custom.maxTokens = 2000
+    custom.logEnabled = false
+
+    let data = try JSONEncoder().encode(custom)
+
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["max_tokens"] as? Int == 2000)
+    #expect(object["log_enabled"] as? Bool == false)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
 }

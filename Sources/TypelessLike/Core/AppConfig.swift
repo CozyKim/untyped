@@ -22,6 +22,10 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// few-shot 예시를 프롬프트 뒤에 붙일지. 성격이 다른 프롬프트(예: 번역)는
     /// 예시가 지시보다 세게 작용해 무시되므로 끌 수 있어야 한다.
     var includeExamples: Bool = true
+    /// 다듬기 응답의 최대 토큰. 결과가 이보다 길면 잘린 문장 대신 원본 전사를 넣는다.
+    var maxTokens: Int = 900
+    /// 받아쓰기마다 원문과 결과를 로그 파일에 남길지. 말한 내용이 전부 남으므로 끌 수 있다.
+    var logEnabled: Bool = true
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -31,6 +35,8 @@ struct AppConfig: Codable, Equatable, Sendable {
         case toggleEnabled = "toggle_enabled"
         case systemPrompt = "system_prompt"
         case includeExamples = "include_examples"
+        case maxTokens = "max_tokens"
+        case logEnabled = "log_enabled"
     }
 
     static let defaultConfig = AppConfig(
@@ -100,8 +106,7 @@ struct AppConfig: Codable, Equatable, Sendable {
 }
 
 extension AppConfig {
-    /// hotkey·toggle_enabled·system_prompt·include_examples는 나중에 추가된 필드라
-    /// 기존 파일에는 없을 수 있다.
+    /// base_url·model·api_key 뒤에 추가된 필드들은 기존 파일에 없을 수 있다.
     /// hotkey가 모르는 문자열이어도 기본값으로 읽는다 — 이 필드 하나 때문에 파일
     /// 전체가 거부되어 API 키까지 기본값으로 대체되면 안 된다.
     ///
@@ -118,5 +123,9 @@ extension AppConfig {
         systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
         includeExamples = try container.decodeIfPresent(Bool.self, forKey: .includeExamples)
             ?? Self.defaultConfig.includeExamples
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
+            ?? Self.defaultConfig.maxTokens
+        logEnabled = try container.decodeIfPresent(Bool.self, forKey: .logEnabled)
+            ?? Self.defaultConfig.logEnabled
     }
 }

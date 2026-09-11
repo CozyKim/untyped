@@ -8,6 +8,7 @@ struct OpenAICompatibleRefiner: TextRefiner {
     let apiKey: String?
     let systemPrompt: String
     let includeExamples: Bool
+    let maxTokens: Int
 
     private struct Request: Encodable {
         let model: String
@@ -51,7 +52,7 @@ struct OpenAICompatibleRefiner: TextRefiner {
                     messages: RefinementPrompt.messages(
                         for: raw, systemPrompt: systemPrompt, includeExamples: includeExamples
                     ),
-                    temperature: 0, max_tokens: 900)
+                    temperature: 0, max_tokens: maxTokens)
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

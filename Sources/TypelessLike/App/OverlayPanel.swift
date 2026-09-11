@@ -1,9 +1,25 @@
 import AppKit
 import SwiftUI
 
-enum OverlayStatus: String, Sendable {
-    case recording = "녹음 중"
-    case refining = "다듬는 중"
+enum OverlayStatus: Equatable, Sendable {
+    case recording
+    case refining
+    /// 삽입이 끝난 뒤 잠깐 보여주는 안내. 문구는 호출자가 정한다.
+    case notice(String)
+
+    var label: String {
+        switch self {
+        case .recording: "녹음 중"
+        case .refining: "다듬는 중"
+        case .notice(let text): text
+        }
+    }
+
+    /// 안내 문구는 상태 라벨보다 길어 패널을 넓게 잡는다.
+    var width: CGFloat {
+        if case .notice = self { return 320 }
+        return 240
+    }
 }
 
 /// 키 윈도우가 되면 원래 앱의 텍스트 포커스가 풀려 ⌘V 삽입이 엉뚱한 곳으로 간다.
@@ -22,8 +38,21 @@ final class OverlayController {
         model.status = status
         model.level = 0
         if panel == nil { panel = makePanel() }
+        panel?.setContentSize(NSSize(width: status.width, height: 64))
         guard positionAtBottomCenter() else { return }
         panel?.orderFrontRegardless()
+    }
+
+    /// 안내를 잠깐 띄웠다 거둔다. 그 사이 새 녹음이 시작돼 상태가 바뀌었으면
+    /// 거두지 않는다 — 녹음 표시를 지워 버리면 안 된다.
+    func showNotice(_ text: String, for duration: Duration = .seconds(2.5)) {
+        let status = OverlayStatus.notice(text)
+        show(status: status)
+        Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.model.status == status else { return }
+            self.hide()
+        }
     }
 
     func update(level: Float) {
@@ -85,17 +114,29 @@ private struct OverlayView: View {
     var body: some View {
         HStack(spacing: 12) {
             Circle()
-                .fill(model.status == .recording ? Color.red : Color.orange)
+                .fill(dotColor)
                 .frame(width: 10, height: 10)
-            Text(model.status.rawValue)
+            Text(model.status.label)
                 .font(.system(size: 13, weight: .medium))
             Spacer(minLength: 0)
-            LevelMeter(level: model.level)
-                .frame(width: 90, height: 12)
+            if case .notice = model.status {
+                // 안내에는 소리 레벨이 없다. 빈 미터를 보여주지 않는다.
+            } else {
+                LevelMeter(level: model.level)
+                    .frame(width: 90, height: 12)
+            }
         }
         .padding(.horizontal, 16)
-        .frame(width: 240, height: 64)
+        .frame(width: model.status.width, height: 64)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var dotColor: Color {
+        switch model.status {
+        case .recording: .red
+        case .refining: .orange
+        case .notice: .yellow
+        }
     }
 }
 

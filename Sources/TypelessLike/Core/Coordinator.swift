@@ -56,7 +56,8 @@ final class Coordinator {
         OpenAICompatibleRefiner(
             baseURL: config.baseURL, model: config.model, apiKey: config.apiKeyOrNil,
             systemPrompt: config.systemPrompt ?? RefinementPrompt.defaultSystemPrompt,
-            includeExamples: config.includeExamples
+            includeExamples: config.includeExamples,
+            maxTokens: config.maxTokens
         )
     }
 
@@ -137,9 +138,23 @@ final class Coordinator {
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
         guard !raw.isEmpty else { reset(); return }
 
-        let text = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(for: recorded))
-        await TextInserter.insert(text)
+        let outcome = await refineOrFallback(raw, using: refiner, timeout: refineTimeout(for: recorded))
+        await TextInserter.insert(outcome.text)
         reset()
+        if case .fallback(_, let reason) = outcome {
+            overlay.showNotice("\(reason.label) — 원본 삽입")
+        }
+        if config.logEnabled, let url = DictationLog.fileURL {
+            let entry = DictationLog.entry(raw: raw, outcome: outcome, recorded: recorded, at: .now)
+            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다.
+            Task.detached {
+                do {
+                    try DictationLog.append(entry, to: url)
+                } catch {
+                    NSLog("[Coordinator] 로그 기록 실패: %@", String(describing: error))
+                }
+            }
+        }
     }
 
     private func reset() {

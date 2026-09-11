@@ -30,6 +30,11 @@ private struct SlowButReturningRefiner: TextRefiner {
     }
 }
 
+private struct TruncatedRefiner: TextRefiner {
+    var isAvailable: Bool { get async { true } }
+    func refine(_ raw: String) async throws -> String { throw RefinerError.truncated }
+}
+
 private struct EmptyResultRefiner: TextRefiner {
     var isAvailable: Bool { get async { true } }
     func refine(_ raw: String) async throws -> String { "" }
@@ -42,27 +47,27 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 
 @Test func throwingRefinerFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: ThrowingRefiner(), timeout: .seconds(5))
-    #expect(out == "원본 전사")
+    #expect(out == .fallback("원본 전사", .failed))
 }
 
 @Test func timeoutFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: SlowRefiner(), timeout: .milliseconds(200))
-    #expect(out == "원본 전사")
+    #expect(out == .fallback("원본 전사", .timeout))
 }
 
 @Test func missingRefinerFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: nil, timeout: .seconds(5))
-    #expect(out == "원본 전사")
+    #expect(out == .fallback("원본 전사", .noRefiner))
 }
 
 @Test func workingRefinerResultIsUsed() async {
     let out = await refineOrFallback("원본 전사", using: EchoRefiner(), timeout: .seconds(5))
-    #expect(out == "다듬음: 원본 전사")
+    #expect(out == .refined("다듬음: 원본 전사"))
 }
 
 @Test func realisticRefinerWithComfortableTimeoutSucceeds() async {
     let out = await refineOrFallback("원본 전사", using: SlowButReturningRefiner(), timeout: .seconds(5))
-    #expect(out == "다듬음: 원본 전사")
+    #expect(out == .refined("다듬음: 원본 전사"))
 }
 
 @Test func cancelAllExitsFastAfterRefinerCompletes() async {
@@ -85,16 +90,27 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 
 @Test func emptyResultFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: EmptyResultRefiner(), timeout: .seconds(5))
-    #expect(out == "원본 전사")
+    #expect(out == .fallback("원본 전사", .emptyResult))
 }
 
 @Test func whitespaceOnlyResultFallsBackToRawText() async {
     let out = await refineOrFallback("원본 전사", using: WhitespaceOnlyRefiner(), timeout: .seconds(5))
-    #expect(out == "원본 전사")
+    #expect(out == .fallback("원본 전사", .emptyResult))
 }
 
 @Test func timeoutGrowsWithRecordingLength() {
     // 4초 + 길이 * 0.4
     #expect(refineTimeout(for: .seconds(5)) == .seconds(6))
     #expect(refineTimeout(for: .seconds(30)) == .seconds(16))
+}
+
+@Test func truncatedResultFallsBackWithItsOwnReason() async {
+    // 최대 토큰을 넘어 잘린 경우는 사용자가 설정을 올려 고칠 수 있으므로 이유를 구분한다.
+    let out = await refineOrFallback("원본 전사", using: TruncatedRefiner(), timeout: .seconds(5))
+    #expect(out == .fallback("원본 전사", .truncated))
+}
+
+@Test func outcomeTextIsWhatGetsInserted() {
+    #expect(RefineOutcome.refined("다듬음").text == "다듬음")
+    #expect(RefineOutcome.fallback("원본", .timeout).text == "원본")
 }

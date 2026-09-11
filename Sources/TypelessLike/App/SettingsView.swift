@@ -30,6 +30,10 @@ struct SettingsView: View {
                 TextField("서버 주소", text: $baseURLText)
                 TextField("모델", text: $draft.model)
                 SecureField("API 키", text: $draft.apiKey)
+                TextField("최대 출력 토큰", value: $draft.maxTokens, format: .number)
+                Text("다듬은 결과가 이보다 길면 다듬지 않고 원본 전사를 넣습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("다듬기 프롬프트") {
                 TextEditor(text: $promptText)
@@ -60,12 +64,26 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("기록") {
+                Toggle("받아쓰기 기록 남기기", isOn: $draft.logEnabled)
+                Text("말한 내용과 다듬은 결과가 로그 파일에 남습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 HStack {
                     if let errorMessage {
                         Text(errorMessage).foregroundStyle(.red)
                     }
                     Spacer()
+                    Button("로그 파일 보기…") {
+                        if let url = DictationLog.fileURL,
+                           FileManager.default.fileExists(atPath: url.path) {
+                            NSWorkspace.shared.open(url)
+                        } else {
+                            errorMessage = "아직 기록이 없습니다"
+                        }
+                    }
                     Button("설정 파일 보기…") {
                         if let url = AppConfig.fileURL {
                             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -89,6 +107,10 @@ struct SettingsView: View {
             return
         }
         draft.baseURL = url
+        guard draft.maxTokens >= 1 else {
+            errorMessage = "최대 출력 토큰은 1 이상이어야 합니다"
+            return
+        }
         let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
             errorMessage = "프롬프트가 비어 있습니다"
