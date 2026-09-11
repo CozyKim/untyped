@@ -22,15 +22,20 @@ func fallbackCause(
         return serverReachable ? detail : "\(detail) (\(baseURL.absoluteString))"
     case .timeout:
         let limit = seconds(timeout)
+        // 예열 요청이 아직 대기 중이면 서버는 연결을 받아 준 것이다 — 꺼진 서버는 즉시 거부해
+        // 예열이 끝나 있다. 모델을 올리는 중인 서버는 연결 확인에도 답을 못 할 수 있으므로,
+        // 그 확인 결과로 "꺼져 있음"이라고 단정하지 않는다.
+        if case .running(let elapsed) = warmUp {
+            let probe = serverReachable ? "" : " · 연결 확인도 응답 없음"
+            return "콜드 스타트 — 예열 요청이 \(seconds(elapsed))초째 응답 없음(모델 로드 중)\(probe). 대기 상한 \(limit)초"
+        }
         guard serverReachable else {
             return "로컬 LLM 서버에 연결할 수 없음 (\(baseURL.absoluteString)) — 꺼져 있거나 주소가 잘못됨. 대기 상한 \(limit)초"
         }
         switch warmUp {
-        case .running(let elapsed):
-            return "콜드 스타트 — 예열 요청이 \(seconds(elapsed))초째 응답 없음(모델 로드 중). 대기 상한 \(limit)초"
         case .finished(let took):
             return "예열은 \(seconds(took))초에 끝났으나 다듬기 응답이 \(limit)초 안에 없음 — 로컬 LLM 과부하 또는 긴 입력"
-        case .notStarted:
+        case .running, .notStarted:
             return "다듬기 응답이 \(limit)초 안에 없음"
         }
     }

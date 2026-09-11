@@ -33,6 +33,8 @@ final class Coordinator {
     /// 로그에 적기 위해 시작과 완료를 기억한다.
     private var warmUpStartedAt: ContinuousClock.Instant?
     private var warmUpFinishedAt: ContinuousClock.Instant?
+    /// 직전 로그 쓰기. 다음 쓰기가 이걸 기다려 파일에 순서대로 붙는다.
+    private var logWrite: Task<Void, Never>?
 
     init(config: AppConfig) {
         self.config = config
@@ -186,11 +188,15 @@ final class Coordinator {
         // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
         guard !raw.isEmpty else { reset(); return }
 
+        // 삽입 중에 설정이 교체돼도 로그는 실제로 다듬기를 시도한 서버를 가리켜야 한다.
+        let refiner = refiner
+        let baseURL = config.baseURL
         let timeout = refineTimeout(for: recorded, base: .seconds(config.refineTimeoutSeconds))
         let outcome = await refineOrFallback(raw, using: refiner, timeout: timeout)
         // 예열 상태는 다듬기가 끝난 직후에 읽는다. 로그는 삽입 뒤에 쓰는데 그때는 다음 녹음이
         // 시작돼 예열 시각이 덮여 있을 수 있다.
         let warmUp = warmUpState(now: .now)
+        let loggedAt = Date()
         let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
         switch destination {
@@ -216,12 +222,18 @@ final class Coordinator {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
         if config.logEnabled, let url = DictationLog.fileURL {
-            let cause = await fallbackCause(for: outcome, timeout: timeout, warmUp: warmUp)
-            let entry = DictationLog.entry(
-                raw: raw, outcome: outcome, recorded: recorded, at: .now, cause: cause
+            let cause = await fallbackCause(
+                for: outcome, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
             )
-            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다.
-            Task.detached {
+            let entry = DictationLog.entry(
+                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause
+            )
+            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다. 다만 연결
+            // 확인이 최대 2초라 다음 받아쓰기의 로그가 먼저 도착할 수 있으므로, 직전 쓰기를
+            // 기다려 순서를 지킨다 — FileHandle의 seek+write는 두 작업이 겹치면 서로 덮어쓴다.
+            let previous = logWrite
+            logWrite = Task.detached {
+                await previous?.value
                 do {
                     try DictationLog.append(entry, to: url)
                 } catch {
@@ -240,7 +252,8 @@ final class Coordinator {
     /// 폴백일 때만 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결 확인(최대 2초)은 삽입과
     /// 상태 초기화가 끝난 뒤에 하므로 사용자를 기다리게 하지 않는다.
     private func fallbackCause(
-        for outcome: RefineOutcome, timeout: Duration, warmUp: WarmUpState
+        for outcome: RefineOutcome, timeout: Duration, warmUp: WarmUpState,
+        refiner: any TextRefiner, baseURL: URL
     ) async -> String? {
         guard case .fallback(_, let reason) = outcome else { return nil }
         switch reason {
@@ -248,7 +261,7 @@ final class Coordinator {
             let reachable = await refiner.isAvailable
             return Untyped.fallbackCause(
                 reason: reason, timeout: timeout, serverReachable: reachable,
-                warmUp: warmUp, baseURL: config.baseURL
+                warmUp: warmUp, baseURL: baseURL
             )
         case .noRefiner, .truncated, .emptyResult:
             return nil

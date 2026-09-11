@@ -45,8 +45,12 @@ enum FallbackReason: Equatable, Sendable {
 func failureDetail(of error: any Error) -> String {
     if let urlError = error as? URLError {
         switch urlError.code {
-        case .cannotConnectToHost, .networkConnectionLost:
+        case .cannotConnectToHost:
             return "연결 거부 — 로컬 LLM 서버가 실행 중이 아님"
+        case .networkConnectionLost:
+            // 예열 때 열린 keep-alive 연결을 서버가 유휴 종료한 뒤 다듬기 요청이 그 연결을
+            // 재사용하면 이 오류가 난다. 서버가 꺼진 것과는 다르다.
+            return "연결 끊김 — 요청 도중 서버가 연결을 닫음(크래시·재시작 또는 keep-alive 만료)"
         case .timedOut:
             return "요청 시간 초과 (URLSession)"
         default:

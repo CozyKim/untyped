@@ -7,9 +7,19 @@ private let url = URL(string: "http://127.0.0.1:8081/v1")!
 @Test func timeoutWithUnreachableServerBlamesTheServer() {
     let cause = fallbackCause(
         reason: .timeout, timeout: .seconds(5), serverReachable: false,
-        warmUp: .running(for: .seconds(6)), baseURL: url
+        warmUp: .finished(in: .milliseconds(300)), baseURL: url
     )
     #expect(cause == "로컬 LLM 서버에 연결할 수 없음 (http://127.0.0.1:8081/v1) — 꺼져 있거나 주소가 잘못됨. 대기 상한 5.0초")
+}
+
+@Test func timeoutWithWarmUpRunningIsColdStartEvenIfProbeFails() {
+    // 모델을 올리는 중인 서버는 연결 확인에도 답을 못 한다. 예열이 대기 중이라는 사실이
+    // 서버가 살아 있다는 더 강한 증거다.
+    let cause = fallbackCause(
+        reason: .timeout, timeout: .seconds(5), serverReachable: false,
+        warmUp: .running(for: .seconds(6)), baseURL: url
+    )
+    #expect(cause == "콜드 스타트 — 예열 요청이 6.0초째 응답 없음(모델 로드 중) · 연결 확인도 응답 없음. 대기 상한 5.0초")
 }
 
 @Test func timeoutWhileWarmUpStillRunningIsColdStart() {
