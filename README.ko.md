@@ -83,6 +83,7 @@ ad-hoc 서명은 빌드마다 designated requirement가 바뀌는데 macOS는 �
 |---|---|
 | 키를 **누른 채** 말하고 뗀다 | 뗀 순간 전사 → 다듬기 → 삽입 |
 | **짧게(250ms 미만)** 눌렀다 뗀다 | 토글 녹음 시작. 다시 누르면 종료 (설정에서 끌 수 있음) |
+| **앱으로 보내기 키** (선택, 두 번째 키) | 홀드/탭은 같고, 결과가 지정한 앱에 들어감: 그 앱으로 전환 → 붙여넣기 → 원래 앱 복귀. 그 앱이 꺼져 있으면 동작하지 않음 |
 
 듣는 동안 화면 아래에 파형 오버레이가 뜨고, 다듬는 동안 스피너로 바뀝니다. 다듬은 결과 대신 원본이 들어가면 이유가 2.5초 표시됩니다 — 예: *다듬기 시간 초과 — 원본 삽입*.
 
@@ -104,6 +105,8 @@ ad-hoc 서명은 빌드마다 designated requirement가 바뀌는데 macOS는 �
 | 기본 예시 포함 | `include_examples` | `true` | few-shot 8쌍. 번역처럼 성격이 다른 프롬프트를 쓸 땐 끔 |
 | 단축키 | `hotkey` | `right_option` | 좌/우 × `option`, `command`, `control`, `shift` 중 하나 |
 | 토글 녹음 | `toggle_enabled` | `true` | 끄면 누르는 동안만 녹음 |
+| 앱으로 보내기 단축키 | `target_app_hotkey` | *(없음 = 꺼짐)* | 두 번째 단독 수식키. `hotkey`와 달라야 함 |
+| 대상 앱 | `target_app_bundle_id` | *(없음)* | 보낼 앱의 bundle ID. 설정 창에서 `/Applications`의 앱을 골라 채움 |
 | 받아쓰기 기록 | `log_enabled` | `true` | [로그](#로그) 참고 |
 
 시스템 프롬프트는 설정 창에서 직접 고치고 "기본값으로 되돌리기"로 복구합니다. few-shot 예시는 설정 창에서 볼 수만 있고 코드(`Sources/Untyped/Refine/RefinementPrompt.swift`)로 바꿉니다.
@@ -158,6 +161,7 @@ Sources/Untyped/
               OpenAICompatibleRefiner.swift
               RefinementPrompt.swift   규칙 4개 + 용어 사전 + few-shot 8쌍
   Output/     TextInserter.swift       클립보드 백업 → ⌘V → 복원
+              TargetApp.swift          지정 앱 활성화 → TextInserter → 원래 앱 복귀
 ```
 
 의존 방향은 `App → Core → { Input, Transcribe, Refine, Output }` 한 방향입니다. 하위 모듈은 서로를 모르고 `Coordinator`만 전부를 압니다. 상태 기계(`reduce`)는 시간을 인자로 받아 결정적으로 테스트됩니다. 요청은 `temperature: 0`입니다.

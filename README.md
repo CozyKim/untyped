@@ -85,6 +85,7 @@ The menu-bar mic icon shows state: idle, listening, refining.
 |---|---|
 | **Hold** the key, speak, release | On release: transcribe → refine → insert |
 | **Tap** (< 250 ms) | Starts toggle recording; tap again to stop (can be disabled) |
+| **Send-to-app key** (optional second key) | Same hold/tap, but the result goes into a configured app: switch to it → paste → switch back. Does nothing if that app is not running |
 
 A floating waveform appears at the bottom of the screen while listening and turns into a spinner while refining. If the raw transcript was inserted instead of a refined one, a notice explains why for 2.5 s — e.g. *다듬기 시간 초과 — 원본 삽입* (refinement timed out — raw inserted).
 
@@ -106,6 +107,8 @@ Menu → **설정…** (Settings). Changes apply on **저장** (Save) without re
 | 기본 예시 포함 | `include_examples` | `true` | the 8 few-shot pairs; turn off for prompts of a different nature (e.g. translation) |
 | 단축키 | `hotkey` | `right_option` | one of left/right × `option`, `command`, `control`, `shift` |
 | 토글 녹음 | `toggle_enabled` | `true` | off = record only while held |
+| 앱으로 보내기 단축키 | `target_app_hotkey` | *(absent = off)* | second standalone modifier; must differ from `hotkey` |
+| 대상 앱 | `target_app_bundle_id` | *(absent)* | bundle ID of the app to send to, picked from `/Applications` in Settings |
 | 받아쓰기 기록 | `log_enabled` | `true` | see [Logs](#logs) |
 
 The system prompt is edited in place with a "기본값으로 되돌리기" (reset) button. The few-shot examples are viewable in Settings but live in code: `Sources/Untyped/Refine/RefinementPrompt.swift`.
@@ -160,6 +163,7 @@ Sources/Untyped/
               OpenAICompatibleRefiner.swift
               RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs
   Output/     TextInserter.swift       clipboard backup → ⌘V → restore
+              TargetApp.swift          activate the configured app → TextInserter → return to the previous app
 ```
 
 Dependencies point one way: `App → Core → { Input, Transcribe, Refine, Output }`. Leaf modules do not know each other; `Coordinator` knows all of them. The state machine (`reduce`) takes the clock as an argument, so it is tested deterministically. Requests use `temperature: 0`.
