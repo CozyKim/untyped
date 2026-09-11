@@ -6,9 +6,10 @@ swift build -c "$CONF" --package-path "$ROOT"
 BIN="$(swift build -c "$CONF" --package-path "$ROOT" --show-bin-path)/Untyped"
 APP="$ROOT/build/Untyped.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Untyped"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Use a named code signing identity to preserve Accessibility permission grants
 # across rebuilds. The certificate keeps its original name from before the app
