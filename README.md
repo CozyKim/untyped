@@ -1,5 +1,7 @@
 English | [한국어](README.ko.md)
 
+<p align="center"><img src="Scripts/icon-previews/b-speech-cursor.png" width="128" alt="Untyped icon"></p>
+
 # Untyped
 
 **Speak, and a cleaned-up sentence lands at your cursor.** A macOS menu-bar dictation app that runs entirely on your machine — on-device speech recognition plus a local LLM that strips fillers, applies your mid-sentence corrections, and restores the English tech terms you said in Korean.

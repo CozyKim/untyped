@@ -1,5 +1,7 @@
 [English](README.md) | 한국어
 
+<p align="center"><img src="Scripts/icon-previews/b-speech-cursor.png" width="128" alt="Untyped icon"></p>
+
 # Untyped
 
 **말하면 다듬어진 문장이 커서 위치에 들어갑니다.** 전부 내 Mac 안에서 도는 macOS 메뉴바 받아쓰기 앱 — 온디바이스 음성 인식에 로컬 LLM을 더해 군말을 지우고, 말하다 고친 내용을 반영하고, 한국어로 발음한 개발 용어를 영문으로 되돌립니다.
