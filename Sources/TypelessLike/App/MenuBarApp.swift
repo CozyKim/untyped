@@ -4,6 +4,10 @@ import AppKit
 @main
 struct MenuBarApp: App {
     @State private var coordinator = Coordinator(config: AppConfig.loadOrCreateDefault())
+    /// 설정 창을 열 때마다 값을 바꿔 SettingsView에 새 identity를 준다. macOS의
+    /// Settings 씬은 창을 닫아도 파괴하지 않고 숨기기만 할 수 있어, identity가
+    /// 그대로면 이전 초안과 에러 메시지가 다시 열었을 때 남아 있게 된다.
+    @State private var settingsGeneration = 0
 
     var body: some Scene {
         MenuBarExtra {
@@ -32,7 +36,7 @@ struct MenuBarApp: App {
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
             }
             Divider()
-            OpenSettingsButton()
+            OpenSettingsButton { settingsGeneration += 1 }
             Button("종료") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: iconName)
@@ -43,6 +47,7 @@ struct MenuBarApp: App {
 
         Settings {
             SettingsView(coordinator: coordinator)
+                .id(settingsGeneration)
         }
     }
 
@@ -81,9 +86,11 @@ struct MenuBarApp: App {
 /// openSettings는 환경값이라 씬 안의 뷰에서만 읽을 수 있어 별도 뷰로 뺀다.
 private struct OpenSettingsButton: View {
     @Environment(\.openSettings) private var openSettings
+    let onOpen: () -> Void
 
     var body: some View {
         Button("설정…") {
+            onOpen()
             NSApp.activate()
             openSettings()
         }

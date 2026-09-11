@@ -74,10 +74,14 @@ private func temporaryFileURL() -> URL {
 }
 
 @Test func secondSaveOverwritesAndStaysOwnerOnly() throws {
-    // 설정 창에서 저장하면 이미 있는 파일을 덮어쓴다. 그때도 0600이어야 한다.
+    // 설정 창에서 저장하면 이미 있는 파일을 덮어쓴다. 기존 파일을 일부러 0644로
+    // 만들어 두면, save가 실제로 0600을 다시 적용하는지 — 기존 권한을 그대로
+    // 두는 게 아니라 — 확인할 수 있다.
     let url = temporaryFileURL()
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-    try AppConfig.save(AppConfig.defaultConfig, to: url)
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
 
     try AppConfig.save(sample, to: url)
 

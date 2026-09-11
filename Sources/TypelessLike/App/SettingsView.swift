@@ -7,10 +7,16 @@ import SwiftUI
 struct SettingsView: View {
     let coordinator: Coordinator
 
-    @State private var draft = AppConfig.defaultConfig
+    @State private var draft: AppConfig
     /// baseURL은 URL 타입이라 편집 중에는 문자열로 들고 저장 시점에 파싱한다.
-    @State private var baseURLText = ""
+    @State private var baseURLText: String
     @State private var errorMessage: String?
+
+    init(coordinator: Coordinator) {
+        self.coordinator = coordinator
+        _draft = State(initialValue: coordinator.config)
+        _baseURLText = State(initialValue: coordinator.config.baseURL.absoluteString)
+    }
 
     var body: some View {
         Form {
@@ -51,13 +57,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
-        .onAppear(perform: loadDraft)
-    }
-
-    private func loadDraft() {
-        draft = coordinator.config
-        baseURLText = coordinator.config.baseURL.absoluteString
-        errorMessage = nil
     }
 
     private func save() {

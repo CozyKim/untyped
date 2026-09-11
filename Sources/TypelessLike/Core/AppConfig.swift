@@ -36,7 +36,7 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// Authorization 헤더를 안 보내는 것이 유효한 상태다.
     var apiKeyOrNil: String? { apiKey.isEmpty ? nil : apiKey }
 
-    /// 설정 창에서 Finder로 열 때 쓰는 실제 파일 경로.
+    /// 설정 파일의 실제 경로. 읽기·쓰기와 설정 창의 Finder 열기가 함께 쓴다.
     static var fileURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("TypelessLike", isDirectory: true)
