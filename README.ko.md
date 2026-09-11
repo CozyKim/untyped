@@ -105,6 +105,7 @@ ad-hoc 서명은 빌드마다 designated requirement가 바뀌는데 macOS는 �
 | 단축키 | `hotkey` | `right_option` | 좌/우 × `option`, `command`, `control`, `shift` 중 하나 |
 | 토글 녹음 | `toggle_enabled` | `true` | 끄면 누르는 동안만 녹음 |
 | 받아쓰기 기록 | `log_enabled` | `true` | [로그](#로그) 참고 |
+| 로그인할 때 자동으로 시작 | *(파일에 없음)* | 꺼짐 | macOS 로그인 항목(`SMAppService`). 상태는 시스템이 가지므로 시스템 설정 › 일반 › 로그인 항목에도 나타남 |
 
 시스템 프롬프트는 설정 창에서 직접 고치고 "기본값으로 되돌리기"로 복구합니다. few-shot 예시는 설정 창에서 볼 수만 있고 코드(`Sources/Untyped/Refine/RefinementPrompt.swift`)로 바꿉니다.
 </details>
@@ -144,6 +145,7 @@ Sources/Untyped/
               SettingsView.swift       설정 창
               OverlayPanel.swift       비활성 NSPanel — 파형·스피너·알림
               PermissionStatus.swift   마이크·손쉬운 사용 권한
+              LoginItem.swift          macOS 로그인 항목(로그인 시 자동 시작)
   Core/       DictationState.swift     상태 기계 — 순수 함수
               Coordinator.swift        컴포넌트를 잇는 유일한 지점
               AppConfig.swift          config.json 읽기/쓰기
@@ -169,7 +171,7 @@ Sources/Untyped/
 swift test
 ```
 
-검증 범위: 상태 기계 전이표, RMS, 설정 파일 왕복·기존 파일 호환·권한, 핫키 판정, 프롬프트 구성, 폴백 정책, 빈 오디오 입력에서 전사기가 멈추지 않는지. 오디오 캡처·전역 키 이벤트·텍스트 삽입·오버레이는 시스템 권한과 하드웨어에 묶여 있어 수동으로 확인합니다.
+검증 범위: 상태 기계 전이표, RMS, 설정 파일 왕복·기존 파일 호환·권한, 핫키 판정, 프롬프트 구성, 폴백 정책, 빈 오디오 입력에서 전사기가 멈추지 않는지. 오디오 캡처·전역 키 이벤트·텍스트 삽입·오버레이·로그인 항목 등록은 시스템 권한·하드웨어·`.app` 번들에 묶여 있어 수동으로 확인합니다.
 
 설계 결정과 실측 근거는 `docs/superpowers/specs/`에 있습니다(로컬에만 유지, git 추적 제외).
 
