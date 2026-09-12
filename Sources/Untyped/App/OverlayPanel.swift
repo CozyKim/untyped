@@ -152,7 +152,9 @@ private struct OverlayView: View {
                 if !model.preview.isEmpty {
                     Text(model.preview)
                         .font(.system(size: PreviewLayout.fontSize))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // 파형처럼 가운데 정렬. 글자가 늘면 가운데에서 양쪽으로 자란다.
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .fixedSize(horizontal: false, vertical: true)
                         // 아래 정렬 + 클립으로 마지막 두 줄만 남긴다. truncationMode(.head)는 첫 줄을
                         // 남기고 마지막 줄 머리만 잘라 쓸 수 없다. 뒤의 fixedSize가 없으면 한 줄일 때도
