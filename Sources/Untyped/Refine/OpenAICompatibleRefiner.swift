@@ -64,8 +64,17 @@ struct OpenAICompatibleRefiner: TextRefiner, AudioRefiner {
     /// 스왑에 밀려나 첫 응답이 수 초~수십 초 걸리는데, 녹음하는 동안 그 비용을 미리 치르고
     /// 프리픽스 블록도 캐시에 올려 두면 전사가 끝났을 때 곧바로 다듬을 수 있다.
     func warmUp() async {
-        guard let request = try? chatRequest(for: ".", maxTokens: 1) else { return }
-        _ = try? await URLSession.shared.data(for: request)
+        try? await keepAlive()
+    }
+
+    /// 예열과 바이트 단위로 같은 1토큰 요청. 모델이 실제로 접근돼 서버의 유휴 TTL이 새로 시작하고
+    /// 프리픽스 캐시도 유지된다. 응답 본문은 읽지 않는다 — 1토큰이라 finish_reason이 length인 것이
+    /// 정상이고, 서버가 요청을 받아 줬는지(HTTP 200)만 중요하다.
+    func keepAlive() async throws {
+        let request = try chatRequest(for: ".", maxTokens: 1)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RefinerError.badStatus(0) }
+        guard http.statusCode == 200 else { throw RefinerError.badStatus(http.statusCode) }
     }
 
     private func chatRequest(for raw: String, maxTokens: Int) throws -> URLRequest {

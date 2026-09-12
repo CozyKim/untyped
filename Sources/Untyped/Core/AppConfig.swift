@@ -54,6 +54,12 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// 전사 경로. 1단계(LLM 오디오)는 실패하면 넣을 원본이 없어 아무것도 넣지 않으므로
     /// 기본은 Apple 2단계다.
     var transcriptionBackend: TranscriptionBackend = .apple
+    /// 다듬기 서버의 모델이 유휴 TTL로 내려가지 않게 주기적으로 1토큰 요청을 보낼지. 서버가 모델을
+    /// 고정(pin)할 수 없는 환경을 위한 것이라 기본은 꺼짐이다 — 기존 사용자의 서버에 갑자기
+    /// 주기적인 요청이 가면 안 된다.
+    var keepAliveEnabled: Bool = false
+    /// keepalive 요청 간격. 서버의 유휴 언로드 시간보다 짧아야 효과가 있다.
+    var keepAliveInterval: KeepAliveInterval = .fiveMinutes
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -72,6 +78,8 @@ struct AppConfig: Codable, Equatable, Sendable {
         case targetAppPressReturn = "target_app_press_return"
         case pressReturnOnFallback = "press_return_on_fallback"
         case transcriptionBackend = "transcription_backend"
+        case keepAliveEnabled = "keep_alive_enabled"
+        case keepAliveInterval = "keep_alive_interval_minutes"
     }
 
     static let defaultConfig = AppConfig(
@@ -179,6 +187,12 @@ extension AppConfig {
         let rawBackend = try container.decodeIfPresent(String.self, forKey: .transcriptionBackend)
         transcriptionBackend = rawBackend.flatMap(TranscriptionBackend.init(rawValue:))
             ?? Self.defaultConfig.transcriptionBackend
+        keepAliveEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepAliveEnabled)
+            ?? Self.defaultConfig.keepAliveEnabled
+        // 선택지에 없는 분 값이면 기본값. 켜짐 여부는 그대로 둔다.
+        let rawInterval = try container.decodeIfPresent(Int.self, forKey: .keepAliveInterval)
+        keepAliveInterval = rawInterval.flatMap(KeepAliveInterval.init(rawValue:))
+            ?? Self.defaultConfig.keepAliveInterval
     }
 }
 
@@ -194,4 +208,9 @@ extension AppConfig {
         if case .fallback = outcome { return pressReturnOnFallback }
         return true
     }
+}
+
+extension AppConfig {
+    /// keepalive 요청 간격. 꺼져 있으면 nil — 스케줄러는 이 값 하나만 보고 루프를 돌릴지 정한다.
+    var keepAlivePeriod: Duration? { keepAliveEnabled ? keepAliveInterval.duration : nil }
 }

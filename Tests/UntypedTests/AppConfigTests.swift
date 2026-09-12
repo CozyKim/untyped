@@ -28,7 +28,7 @@ private func temporaryFileURL() -> URL {
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
         "press_return", "target_app_press_return", "press_return_on_fallback",
-        "transcription_backend",
+        "transcription_backend", "keep_alive_enabled", "keep_alive_interval_minutes",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -334,4 +334,58 @@ private let sampleWithTargetApp: AppConfig = {
     #expect(decoded.transcriptionBackend == .apple)
     #expect(decoded.apiKey == "sk-keep")
     #expect(decoded.toggleEnabled == false)
+}
+
+// MARK: - Keep Alive
+
+@Test func keepAliveDefaultsToOffAndFiveMinutes() throws {
+    // 기본은 꺼짐 — 기존 사용자의 서버에 갑자기 주기적인 요청이 가면 안 된다.
+    #expect(AppConfig.defaultConfig.keepAliveEnabled == false)
+    #expect(AppConfig.defaultConfig.keepAliveInterval == .fiveMinutes)
+    let data = try JSONEncoder().encode(sample)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["keep_alive_enabled"] as? Bool == false)
+    #expect(object["keep_alive_interval_minutes"] as? Int == 5)
+}
+
+@Test func keepAliveFieldsRoundTrip() throws {
+    var custom = sample
+    custom.keepAliveEnabled = true
+    custom.keepAliveInterval = .twoMinutes
+    let data = try JSONEncoder().encode(custom)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["keep_alive_enabled"] as? Bool == true)
+    #expect(object["keep_alive_interval_minutes"] as? Int == 2)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+}
+
+@Test func legacyFileWithoutKeepAliveFieldsReadsOffAndFiveMinutes() throws {
+    let json = """
+    {"api_key":"sk-legacy","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.keepAliveEnabled == false)
+    #expect(decoded.keepAliveInterval == .fiveMinutes)
+    #expect(decoded.apiKey == "sk-legacy")
+}
+
+@Test func unknownKeepAliveIntervalFallsBackToFiveMinutesAndKeepsOtherFields() throws {
+    // 선택지에 없는 분 값(손으로 고친 파일)은 기본값으로 읽는다 — hotkey와 같은 규칙. 켜짐 상태는 유지한다.
+    let json = """
+    {"api_key":"sk-keep","base_url":"http://127.0.0.1:8081/v1","model":"m","keep_alive_enabled":true,"keep_alive_interval_minutes":7}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.keepAliveEnabled == true)
+    #expect(decoded.keepAliveInterval == .fiveMinutes)
+    #expect(decoded.apiKey == "sk-keep")
+}
+
+@Test func keepAlivePeriodIsNilWhenOffAndTheIntervalWhenOn() {
+    // Coordinator는 이 값 하나만 본다 — nil이면 루프를 돌리지 않는다.
+    var config = sample
+    #expect(config.keepAlivePeriod == nil)
+    config.keepAliveEnabled = true
+    #expect(config.keepAlivePeriod == .seconds(300))
+    config.keepAliveInterval = .oneMinute
+    #expect(config.keepAlivePeriod == .seconds(60))
 }

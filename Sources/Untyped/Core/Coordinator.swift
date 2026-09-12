@@ -24,6 +24,8 @@ final class Coordinator {
     /// 앱으로 보내기 단축키. 설정에 없으면 nil.
     private var targetAppHotkey: HotkeyMonitor?
     private var availabilityPoll: Task<Void, Never>?
+    /// 설정이 켜져 있으면 주기적으로 모델을 건드려 서버의 유휴 TTL을 새로 시작한다.
+    private let keepAlive = KeepAlive()
     private var capture: AudioCapture?
     /// 녹음을 받는 쪽. 설정의 전사 방식에 따라 둘 중 하나만 있다.
     private var transcriber: Transcriber?
@@ -53,6 +55,7 @@ final class Coordinator {
         hotkey = makeMonitor(config.hotkey, destination: .frontmost)
         targetAppHotkey = config.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
         restartAvailabilityPoll()
+        restartKeepAlive()
     }
 
     /// 저장된 새 설정을 즉시 반영한다. 재시작이 필요 없다.
@@ -75,6 +78,7 @@ final class Coordinator {
             }
         }
         restartAvailabilityPoll()
+        restartKeepAlive()
     }
 
     /// 다듬기 백엔드는 OpenAI 호환 서버 하나뿐이다. 설정으로 주소·모델·키만 갈아끼운다.
@@ -113,6 +117,18 @@ final class Coordinator {
             refinerAvailable = available
             try? await Task.sleep(for: .seconds(10))
         }
+    }
+
+    /// 설정이 바뀌면 새 서버·간격으로 다시 시작한다. 진행 중이던 요청은 취소된다. 꺼져 있으면 멈추기만
+    /// 한다. 받아쓰기가 진행 중인 주기는 건너뛴다 — 그 다듬기 요청이 모델을 건드리고, 끼어든 요청은
+    /// 다듬기 응답만 늦춘다.
+    private func restartKeepAlive() {
+        let refiner = refiner
+        keepAlive.start(
+            every: config.keepAlivePeriod,
+            isBusy: { [weak self] in self?.state != .idle },
+            touch: { try await refiner.keepAlive() }
+        )
     }
 
     private func handle(_ event: TriggerEvent, from destination: InsertDestination) {
@@ -233,22 +249,29 @@ final class Coordinator {
         let raw: String?
         let timeout: Duration
         let outcome: RefineOutcome
+        // 로그에 남길 단계별 소요 시간. 어느 단계가 느렸는지 로그만 보고 가릴 수 있어야 한다.
+        let timing: DictationTiming
         if let transcriber {
+            let transcriptionStartedAt = ContinuousClock.now
             let text = (try? await transcriber.finish()) ?? ""
+            let transcription = ContinuousClock.now - transcriptionStartedAt
             // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
             guard !text.isEmpty else { reset(); return }
             raw = text
             timeout = refineTimeout(for: recorded, base: base)
+            let refinementStartedAt = ContinuousClock.now
             outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
+            timing = .apple(transcription: transcription, refinement: .now - refinementStartedAt)
         } else if let recorder {
             let wav = await recorder.finish()
             guard !wav.isEmpty else { reset(); return }
             raw = nil
             timeout = audioRefineTimeout(for: recorded, base: base)
-            guard let text = await refineAudioOrGiveUp(
+            guard let (text, request) = await refineAudioOrGiveUp(
                 wav, timeout: timeout, recorded: recorded, refiner: refiner, baseURL: baseURL
             ) else { return }
             outcome = .refined(text)
+            timing = .llmAudio(request: request)
         } else {
             reset()
             return
@@ -289,23 +312,26 @@ final class Coordinator {
                 )
             }
             let entry = DictationLog.entry(
-                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause
+                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause, timing: timing
             )
             appendLog(entry, to: url)
         }
     }
 
-    /// 오디오를 한 요청으로 다듬는다. 실패하면 넣을 원본이 없다 — Apple 전사로 몰래 대체하지
-    /// 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고 실패를 알리고 로그에 원인을 남긴 뒤
-    /// nil을 돌려준다.
+    /// 오디오를 한 요청으로 다듬는다. 결과와 함께 요청에 걸린 시간을 돌려준다. 실패하면 넣을 원본이
+    /// 없다 — Apple 전사로 몰래 대체하지 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고
+    /// 실패를 알리고 로그에 원인과 소요 시간을 남긴 뒤 nil을 돌려준다.
     private func refineAudioOrGiveUp(
         _ wav: Data, timeout: Duration, recorded: Duration,
         refiner: any TextRefiner, baseURL: URL
-    ) async -> String? {
+    ) async -> (text: String, took: Duration)? {
         let audioRefiner = audioRefiner
-        switch await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) }) {
+        let startedAt = ContinuousClock.now
+        let result = await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) })
+        let took = ContinuousClock.now - startedAt
+        switch result {
         case .text(let text):
-            return text
+            return (text, took)
         case .failed(let reason):
             let warmUp = warmUpState(now: .now)
             let loggedAt = Date()
@@ -316,7 +342,8 @@ final class Coordinator {
                     for: reason, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
                 )
                 let entry = DictationLog.failureEntry(
-                    label: reason.label, recorded: recorded, at: loggedAt, cause: cause
+                    label: reason.label, recorded: recorded, at: loggedAt, cause: cause,
+                    timing: .llmAudio(request: took)
                 )
                 appendLog(entry, to: url)
             }

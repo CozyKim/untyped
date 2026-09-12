@@ -43,6 +43,16 @@ struct SettingsView: View {
                 Text("여기에 녹음 길이의 40%가 더해집니다. 그 안에 응답이 없으면 원본 전사를 넣습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("모델 유지 (Keep Alive)", isOn: $draft.keepAliveEnabled)
+                Picker("유지 요청 간격", selection: $draft.keepAliveInterval) {
+                    ForEach(KeepAliveInterval.allCases, id: \.self) { interval in
+                        Text(interval.displayName).tag(interval)
+                    }
+                }
+                .disabled(!draft.keepAliveEnabled)
+                Text("서버가 모델을 고정할 수 없을 때 켭니다. 이 간격마다 1토큰 요청을 보내 모델이 유휴 시간 초과로 내려가지 않게 합니다. 서버의 유휴 언로드 시간보다 짧게 잡으세요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("다듬기 프롬프트") {
                 TextEditor(text: $promptText)
