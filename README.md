@@ -103,6 +103,8 @@ Menu → **설정…** (Settings). Changes apply on **저장** (Save) without re
 | API 키 | `api_key` | `""` | empty = no `Authorization` header |
 | 최대 출력 토큰 | `max_tokens` | `900` | longer results are discarded in favor of the raw transcript rather than inserted truncated |
 | 다듬기 대기 시간 | `refine_timeout_seconds` | `4` | plus 40 % of the recording length |
+| 모델 유지 (Keep Alive) | `keep_alive_enabled` | `false` | for servers that cannot pin a model: periodically send the 1-token warm-up request so the model's idle TTL keeps restarting — see [Keep Alive](#keep-alive) |
+| 유지 요청 간격 | `keep_alive_interval_minutes` | `5` | one of `1`, `2`, `5`, `10`, `15`, `30`; any other value reads as `5`. Must be shorter than the server's idle-unload time |
 | 시스템 프롬프트 | `system_prompt` | *(absent = built-in)* | only written when it differs from the built-in default |
 | 기본 예시 포함 | `include_examples` | `true` | the 8 few-shot pairs; turn off for prompts of a different nature (e.g. translation) |
 | 단축키 | `hotkey` | `right_option` | one of left/right × `option`, `command`, `control`, `shift` |
@@ -125,16 +127,22 @@ Each dictation appends raw and refined text to `~/Library/Application Support/Un
 
 ```
 [2026-09-11 22:10:33] 녹음 7.2초 · 다듬음
+소요: STT 0.3초 · 다듬기 1.4초
 STT : 어 내일 아침에 회의 자료를 보내드릴게요 아니 오늘 저녁에 보내드릴게요
 결과: 오늘 저녁에 회의 자료를 보내드릴게요.
 ```
 
-When the raw transcript was inserted instead, a `원인:` line right under the header says why — the local LLM server was not running (connection refused), the model was still loading (cold start: the warm-up request sent on key-down had not returned), the server answered but too slowly, or an HTTP error:
+The header carries the recording length; the `소요:` line right under it says where the time after key-up went, per path. `apple`: `STT` is from key-up to the final on-device transcript, `다듬기` is the LLM refinement round trip (on a timeout or error, how long was waited before falling back). `llm_audio`: a single `오디오 다듬기` figure, because transcription and refinement are one request. The line is only present for dictations logged by this version — older entries keep their shape.
+
+When the raw transcript was inserted instead, a `원인:` line under the timing says why — the local LLM server was not running (connection refused), the model was still loading (cold start: the warm-up request sent on key-down had not returned), the server answered but too slowly, or an HTTP error:
 
 ```
 [2026-09-12 22:10:33] 녹음 7.2초 · 원본 (다듬기 시간 초과)
+소요: STT 0.3초 · 다듬기 6.9초
 원인: 콜드 스타트 — 예열 요청이 9.3초째 응답 없음(모델 로드 중). 대기 상한 6.9초
 ```
+
+Keep Alive requests never go to this file. Each one leaves a single line in the unified log (Console.app, subsystem-less `[KeepAlive]` prefix): `완료 0.8초`, or `실패 0.0초: 연결 거부 — 로컬 LLM 서버가 실행 중이 아님 — 다음 주기에 다시 시도`. No key, no request or response body.
 
 Since it records everything you say, it can be turned off in Settings.
 
@@ -144,11 +152,15 @@ The log marks fallbacks as `· 원본 (reason)`:
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| 다듬기 시간 초과 | server too slow | Free memory — under pressure macOS swaps the model out and the first token can take 3–30 s (observed: 29 s for 9 tokens on a 16 GB Mac with 17 GB of swap in use). Untyped pre-warms the server with a 1-token request when recording starts, but the first dictation after a long idle can still time out. Raising *다듬기 대기 시간* helps too. |
+| 다듬기 시간 초과 | server too slow | Free memory — under pressure macOS swaps the model out and the first token can take 3–30 s (observed: 29 s for 9 tokens on a 16 GB Mac with 17 GB of swap in use). Untyped pre-warms the server with a 1-token request when recording starts (see *Warm-up and health check* below), but the first dictation after a long idle can still time out. Raising *다듬기 대기 시간* helps too. |
 | 최대 토큰 초과 | long utterance | raise *최대 출력 토큰* |
 | 다듬기 서버 오류 | server down, wrong URL or key | the menu also shows "연결할 수 없음" |
 
 Prefix caching: the system message is sent byte-identical every request so the server's prefix cache can hit. oMLX caches in 512-token blocks — a prompt shorter than that is never cached, which is fine because it is also cheap to prefill.
+
+Warm-up and health check: on key-down Untyped sends one `GET /health` to the origin of `base_url` (not `/v1/health`, 1 s timeout). oMLX answers like `{"status":"healthy","engine_pool":{"loaded_count":1,…}}`; if the status is HTTP 200 and `loaded_count` is at least 1 the model is already resident, so the 1-token warm-up request is skipped — the load spike that used to coincide with the start of recording goes away. If `loaded_count` is 0 (oMLX returns 503 + `status: "loading"` while loading), `/health` does not exist (Ollama, LM Studio… → 404), or the reply is late or malformed, the warm-up runs exactly as before. There is no periodic polling — one GET per key-down, and no setting. Two limitations: the reply does not say *which* model is loaded, so `loaded_count ≥ 1` is taken to mean the configured one; with several models where only another one is resident, the warm-up is skipped and you get a cold start. And "loaded" is whether the server's engine exists — it cannot see that macOS swapped the model out; in that case the swap-in cost is paid during refinement, and the log's `원인:` line says so ("예열을 생략했으나 …").
+
+<a name="keep-alive"></a>Keep Alive (off by default): the warm-up only helps once you press the key — if the server unloads idle models after a TTL and cannot pin one, the first dictation after a break still pays the full load. Turning on *모델 유지 (Keep Alive)* in Settings makes Untyped send the same 1-token `POST /v1/chat/completions` (system prompt + few-shot pairs + `"."`, `max_tokens: 1`, `temperature: 0`) once immediately and then every *유지 요청 간격* (1/2/5/10/15/30 min, default 5), so the model is actually accessed and its `last_access` moves. `GET /health` is deliberately not used for this — it reports state but does not count as access, so it would not stop the TTL. Pick an interval shorter than the server's idle-unload time. Behaviour: one loop, requests never overlap (the next waits for the previous to finish); a tick that lands while a dictation is in progress is skipped, since the refinement request itself touches the model; every request logs one line with its duration; a failure (server down, HTTP error, timeout) is logged with a one-line reason and retried at the next tick — no back-off, no overlay notice, dictation is never blocked; saving Settings cancels the running loop (and any in-flight request) and starts a new one with the new server/interval. Limitations: it keeps the *configured* model warm only insofar as the server loads that model for the request; it cannot see or prevent macOS swapping the model out (the request just pays the swap-in); and a server that loads a model per request with no cache gains nothing but a periodic tiny request.
 
 ## Architecture
 
@@ -174,6 +186,8 @@ Sources/Untyped/
   Transcribe/ Transcriber.swift        SpeechAnalyzer → String
               AudioRecorder.swift      PCM buffers → WAV bytes (for `llm_audio`)
   Refine/     TextRefiner.swift        protocols, fallback policy, timeouts
+              LLMHealth.swift          parse origin/health — skip warm-up when a model is loaded
+              KeepAlive.swift          interval choices + the loop that touches the model so its idle TTL restarts
               OpenAICompatibleRefiner.swift   refine text, or refine audio in one request, on the same server
               RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs; text or audio as the final turn
               MultipartChatMessage.swift  chat message whose content is a string or `input_audio`/`text` parts
@@ -190,7 +204,7 @@ Dependencies point one way: `App → Core → { Input, Transcribe, Refine, Outpu
 swift test
 ```
 
-Covered: state-machine transitions, RMS, config round-trip / legacy-file compatibility / file permissions, hotkey matching, prompt composition, fallback policy, and that the transcriber does not hang on empty audio input. Audio capture, global key events, text insertion, the overlay and login-item registration depend on system permissions, hardware and the `.app` bundle and are verified by hand.
+Covered: state-machine transitions, RMS, config round-trip / legacy-file compatibility / file permissions, hotkey matching, prompt composition, fallback policy, log entry format including the timing line, the Keep Alive request payload (against a stubbed `URLProtocol`) and scheduler (interval, skip-while-busy, no overlap, failure record and retry, stop/restart, nothing sent when off), and that the transcriber does not hang on empty audio input. Audio capture, global key events, text insertion, the overlay and login-item registration depend on system permissions, hardware and the `.app` bundle and are verified by hand.
 
 Design notes and measurements live in `docs/superpowers/specs/` (kept locally, not tracked).
 

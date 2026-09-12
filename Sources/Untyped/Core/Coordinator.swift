@@ -24,6 +24,8 @@ final class Coordinator {
     /// 앱으로 보내기 단축키. 설정에 없으면 nil.
     private var targetAppHotkey: HotkeyMonitor?
     private var availabilityPoll: Task<Void, Never>?
+    /// 설정이 켜져 있으면 주기적으로 모델을 건드려 서버의 유휴 TTL을 새로 시작한다.
+    private let keepAlive = KeepAlive()
     private var capture: AudioCapture?
     /// 녹음을 받는 쪽. 설정의 전사 방식에 따라 둘 중 하나만 있다.
     private var transcriber: Transcriber?
@@ -37,6 +39,8 @@ final class Coordinator {
     /// 로그에 적기 위해 시작과 완료를 기억한다.
     private var warmUpStartedAt: ContinuousClock.Instant?
     private var warmUpFinishedAt: ContinuousClock.Instant?
+    /// 서버가 모델이 올라와 있다고 답해 이번 녹음에는 예열 요청을 보내지 않았다.
+    private var warmUpSkipped = false
     /// 직전 로그 쓰기. 다음 쓰기가 이걸 기다려 파일에 순서대로 붙는다.
     private var logWrite: Task<Void, Never>?
 
@@ -51,6 +55,7 @@ final class Coordinator {
         hotkey = makeMonitor(config.hotkey, destination: .frontmost)
         targetAppHotkey = config.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
         restartAvailabilityPoll()
+        restartKeepAlive()
     }
 
     /// 저장된 새 설정을 즉시 반영한다. 재시작이 필요 없다.
@@ -73,6 +78,7 @@ final class Coordinator {
             }
         }
         restartAvailabilityPoll()
+        restartKeepAlive()
     }
 
     /// 다듬기 백엔드는 OpenAI 호환 서버 하나뿐이다. 설정으로 주소·모델·키만 갈아끼운다.
@@ -113,6 +119,18 @@ final class Coordinator {
         }
     }
 
+    /// 설정이 바뀌면 새 서버·간격으로 다시 시작한다. 진행 중이던 요청은 취소된다. 꺼져 있으면 멈추기만
+    /// 한다. 받아쓰기가 진행 중인 주기는 건너뛴다 — 그 다듬기 요청이 모델을 건드리고, 끼어든 요청은
+    /// 다듬기 응답만 늦춘다.
+    private func restartKeepAlive() {
+        let refiner = refiner
+        keepAlive.start(
+            every: config.keepAlivePeriod,
+            isBusy: { [weak self] in self?.state != .idle },
+            touch: { try await refiner.keepAlive() }
+        )
+    }
+
     private func handle(_ event: TriggerEvent, from destination: InsertDestination) {
         // 앱으로 보내기는 대상 앱이 실행 중일 때만 시작한다. 말하기 전에 알려야 헛수고가
         // 없으므로 녹음 시작 시점에 확인하고, reduce에 넘기지 않아 상태는 idle로 남긴다.
@@ -133,14 +151,21 @@ final class Coordinator {
             overlay.show(status: .listening)
             // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
+            // 서버가 모델이 이미 올라와 있다고 답하면(oMLX /health) 1토큰 요청도 보내지 않는다 —
+            // 녹음 시작과 겹치는 부하를 줄인다. 확인이 안 되는 서버는 지금까지처럼 예열한다.
             let refiner = refiner
             let startedAt = ContinuousClock.now
             warmUpStartedAt = startedAt
             warmUpFinishedAt = nil
+            warmUpSkipped = false
             Task { [weak self] in
-                await refiner.warmUp()
+                let needsWarmUp = await refiner.health.needsWarmUp
+                if needsWarmUp {
+                    await refiner.warmUp()
+                }
                 // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
                 guard let self, self.warmUpStartedAt == startedAt else { return }
+                self.warmUpSkipped = !needsWarmUp
                 self.warmUpFinishedAt = .now
             }
             captureSetup = Task { await beginCapture() }
@@ -224,22 +249,29 @@ final class Coordinator {
         let raw: String?
         let timeout: Duration
         let outcome: RefineOutcome
+        // 로그에 남길 단계별 소요 시간. 어느 단계가 느렸는지 로그만 보고 가릴 수 있어야 한다.
+        let timing: DictationTiming
         if let transcriber {
+            let transcriptionStartedAt = ContinuousClock.now
             let text = (try? await transcriber.finish()) ?? ""
+            let transcription = ContinuousClock.now - transcriptionStartedAt
             // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
             guard !text.isEmpty else { reset(); return }
             raw = text
             timeout = refineTimeout(for: recorded, base: base)
+            let refinementStartedAt = ContinuousClock.now
             outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
+            timing = .apple(transcription: transcription, refinement: .now - refinementStartedAt)
         } else if let recorder {
             let wav = await recorder.finish()
             guard !wav.isEmpty else { reset(); return }
             raw = nil
             timeout = audioRefineTimeout(for: recorded, base: base)
-            guard let text = await refineAudioOrGiveUp(
+            guard let (text, request) = await refineAudioOrGiveUp(
                 wav, timeout: timeout, recorded: recorded, refiner: refiner, baseURL: baseURL
             ) else { return }
             outcome = .refined(text)
+            timing = .llmAudio(request: request)
         } else {
             reset()
             return
@@ -280,23 +312,26 @@ final class Coordinator {
                 )
             }
             let entry = DictationLog.entry(
-                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause
+                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause, timing: timing
             )
             appendLog(entry, to: url)
         }
     }
 
-    /// 오디오를 한 요청으로 다듬는다. 실패하면 넣을 원본이 없다 — Apple 전사로 몰래 대체하지
-    /// 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고 실패를 알리고 로그에 원인을 남긴 뒤
-    /// nil을 돌려준다.
+    /// 오디오를 한 요청으로 다듬는다. 결과와 함께 요청에 걸린 시간을 돌려준다. 실패하면 넣을 원본이
+    /// 없다 — Apple 전사로 몰래 대체하지 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고
+    /// 실패를 알리고 로그에 원인과 소요 시간을 남긴 뒤 nil을 돌려준다.
     private func refineAudioOrGiveUp(
         _ wav: Data, timeout: Duration, recorded: Duration,
         refiner: any TextRefiner, baseURL: URL
-    ) async -> String? {
+    ) async -> (text: String, took: Duration)? {
         let audioRefiner = audioRefiner
-        switch await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) }) {
+        let startedAt = ContinuousClock.now
+        let result = await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) })
+        let took = ContinuousClock.now - startedAt
+        switch result {
         case .text(let text):
-            return text
+            return (text, took)
         case .failed(let reason):
             let warmUp = warmUpState(now: .now)
             let loggedAt = Date()
@@ -307,7 +342,8 @@ final class Coordinator {
                     for: reason, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
                 )
                 let entry = DictationLog.failureEntry(
-                    label: reason.label, recorded: recorded, at: loggedAt, cause: cause
+                    label: reason.label, recorded: recorded, at: loggedAt, cause: cause,
+                    timing: .llmAudio(request: took)
                 )
                 appendLog(entry, to: url)
             }
@@ -332,8 +368,8 @@ final class Coordinator {
 
     private func warmUpState(now: ContinuousClock.Instant) -> WarmUpState {
         guard let startedAt = warmUpStartedAt else { return .notStarted }
-        if let finishedAt = warmUpFinishedAt { return .finished(in: finishedAt - startedAt) }
-        return .running(for: now - startedAt)
+        guard let finishedAt = warmUpFinishedAt else { return .running(for: now - startedAt) }
+        return warmUpSkipped ? .skipped : .finished(in: finishedAt - startedAt)
     }
 
     /// 폴백이나 오디오 다듬기 실패일 때 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결
