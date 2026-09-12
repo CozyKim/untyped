@@ -67,3 +67,22 @@ func reasonsThatAreSelfExplanatoryHaveNoCause(reason: FallbackReason) {
     )
     #expect(cause == nil)
 }
+
+@Test func timeoutAfterSkippedWarmUpSaysSo() {
+    // 서버가 모델이 올라와 있다고 답해 예열을 보내지 않았다. 그래도 늦었다면 예열 생략이
+    // 원인 후보(스왑에서 복귀)임을 로그가 숨기면 안 된다.
+    let cause = fallbackCause(
+        reason: .timeout, timeout: .seconds(5), serverReachable: true,
+        warmUp: .skipped, baseURL: url
+    )
+    #expect(cause == "서버가 모델이 올라와 있다고 답해 예열을 생략했으나 다듬기 응답이 5.0초 안에 없음 — 로컬 LLM 과부하, 스왑에서 복귀 중 또는 긴 입력")
+}
+
+@Test func timeoutAfterSkippedWarmUpWithUnreachableServerBlamesTheServer() {
+    // 예열이 대기 중이라는 증거가 없으니, 연결 확인 실패는 그대로 "연결할 수 없음"이다.
+    let cause = fallbackCause(
+        reason: .timeout, timeout: .seconds(5), serverReachable: false,
+        warmUp: .skipped, baseURL: url
+    )
+    #expect(cause == "로컬 LLM 서버에 연결할 수 없음 (http://127.0.0.1:8081/v1) — 꺼져 있거나 주소가 잘못됨. 대기 상한 5.0초")
+}

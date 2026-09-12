@@ -43,6 +43,23 @@ struct OpenAICompatibleRefiner: TextRefiner, AudioRefiner {
         }
     }
 
+    /// origin의 `/health`에 묻는다. 1초 안에 답이 없거나 어떤 오류든 나면 `unknown` — 예열을
+    /// 건너뛸 근거를 찾는 것이지 받아쓰기를 막는 조건이 아니라, 길게 기다리지 않는다. 응답도
+    /// 요청도 로그에 남기지 않는다.
+    var health: LLMHealth {
+        get async {
+            guard let url = LLMHealth.url(for: baseURL) else { return .unknown }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 1
+            if let apiKey {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  let http = response as? HTTPURLResponse else { return .unknown }
+            return LLMHealth.parse(statusCode: http.statusCode, body: data)
+        }
+    }
+
     /// 실제 요청과 같은 프리픽스로 1토큰만 요청한다. 메모리가 부족한 기기에서는 모델이
     /// 스왑에 밀려나 첫 응답이 수 초~수십 초 걸리는데, 녹음하는 동안 그 비용을 미리 치르고
     /// 프리픽스 블록도 캐시에 올려 두면 전사가 끝났을 때 곧바로 다듬을 수 있다.

@@ -144,11 +144,13 @@ The log marks fallbacks as `· 원본 (reason)`:
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| 다듬기 시간 초과 | server too slow | Free memory — under pressure macOS swaps the model out and the first token can take 3–30 s (observed: 29 s for 9 tokens on a 16 GB Mac with 17 GB of swap in use). Untyped pre-warms the server with a 1-token request when recording starts, but the first dictation after a long idle can still time out. Raising *다듬기 대기 시간* helps too. |
+| 다듬기 시간 초과 | server too slow | Free memory — under pressure macOS swaps the model out and the first token can take 3–30 s (observed: 29 s for 9 tokens on a 16 GB Mac with 17 GB of swap in use). Untyped pre-warms the server with a 1-token request when recording starts (see *Warm-up and health check* below), but the first dictation after a long idle can still time out. Raising *다듬기 대기 시간* helps too. |
 | 최대 토큰 초과 | long utterance | raise *최대 출력 토큰* |
 | 다듬기 서버 오류 | server down, wrong URL or key | the menu also shows "연결할 수 없음" |
 
 Prefix caching: the system message is sent byte-identical every request so the server's prefix cache can hit. oMLX caches in 512-token blocks — a prompt shorter than that is never cached, which is fine because it is also cheap to prefill.
+
+Warm-up and health check: on key-down Untyped sends one `GET /health` to the origin of `base_url` (not `/v1/health`, 1 s timeout). oMLX answers like `{"status":"healthy","engine_pool":{"loaded_count":1,…}}`; if the status is HTTP 200 and `loaded_count` is at least 1 the model is already resident, so the 1-token warm-up request is skipped — the load spike that used to coincide with the start of recording goes away. If `loaded_count` is 0 (oMLX returns 503 + `status: "loading"` while loading), `/health` does not exist (Ollama, LM Studio… → 404), or the reply is late or malformed, the warm-up runs exactly as before. There is no periodic polling — one GET per key-down, and no setting. Two limitations: the reply does not say *which* model is loaded, so `loaded_count ≥ 1` is taken to mean the configured one; with several models where only another one is resident, the warm-up is skipped and you get a cold start. And "loaded" is whether the server's engine exists — it cannot see that macOS swapped the model out; in that case the swap-in cost is paid during refinement, and the log's `원인:` line says so ("예열을 생략했으나 …").
 
 ## Architecture
 
@@ -174,6 +176,7 @@ Sources/Untyped/
   Transcribe/ Transcriber.swift        SpeechAnalyzer → String
               AudioRecorder.swift      PCM buffers → WAV bytes (for `llm_audio`)
   Refine/     TextRefiner.swift        protocols, fallback policy, timeouts
+              LLMHealth.swift          parse origin/health — skip warm-up when a model is loaded
               OpenAICompatibleRefiner.swift   refine text, or refine audio in one request, on the same server
               RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs; text or audio as the final turn
               MultipartChatMessage.swift  chat message whose content is a string or `input_audio`/`text` parts

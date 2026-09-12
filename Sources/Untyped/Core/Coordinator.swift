@@ -37,6 +37,8 @@ final class Coordinator {
     /// 로그에 적기 위해 시작과 완료를 기억한다.
     private var warmUpStartedAt: ContinuousClock.Instant?
     private var warmUpFinishedAt: ContinuousClock.Instant?
+    /// 서버가 모델이 올라와 있다고 답해 이번 녹음에는 예열 요청을 보내지 않았다.
+    private var warmUpSkipped = false
     /// 직전 로그 쓰기. 다음 쓰기가 이걸 기다려 파일에 순서대로 붙는다.
     private var logWrite: Task<Void, Never>?
 
@@ -133,14 +135,21 @@ final class Coordinator {
             overlay.show(status: .listening)
             // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
+            // 서버가 모델이 이미 올라와 있다고 답하면(oMLX /health) 1토큰 요청도 보내지 않는다 —
+            // 녹음 시작과 겹치는 부하를 줄인다. 확인이 안 되는 서버는 지금까지처럼 예열한다.
             let refiner = refiner
             let startedAt = ContinuousClock.now
             warmUpStartedAt = startedAt
             warmUpFinishedAt = nil
+            warmUpSkipped = false
             Task { [weak self] in
-                await refiner.warmUp()
+                let needsWarmUp = await refiner.health.needsWarmUp
+                if needsWarmUp {
+                    await refiner.warmUp()
+                }
                 // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
                 guard let self, self.warmUpStartedAt == startedAt else { return }
+                self.warmUpSkipped = !needsWarmUp
                 self.warmUpFinishedAt = .now
             }
             captureSetup = Task { await beginCapture() }
@@ -332,8 +341,8 @@ final class Coordinator {
 
     private func warmUpState(now: ContinuousClock.Instant) -> WarmUpState {
         guard let startedAt = warmUpStartedAt else { return .notStarted }
-        if let finishedAt = warmUpFinishedAt { return .finished(in: finishedAt - startedAt) }
-        return .running(for: now - startedAt)
+        guard let finishedAt = warmUpFinishedAt else { return .running(for: now - startedAt) }
+        return warmUpSkipped ? .skipped : .finished(in: finishedAt - startedAt)
     }
 
     /// 폴백이나 오디오 다듬기 실패일 때 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결

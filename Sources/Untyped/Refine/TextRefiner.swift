@@ -6,10 +6,14 @@ protocol TextRefiner: Sendable {
     func refine(_ raw: String) async throws -> String
     /// 서버가 모델을 메모리에 올리고 프리픽스를 캐시하도록 미리 건드린다. 결과는 버린다.
     func warmUp() async
+    /// 서버가 모델을 올려 두었는지. `loaded`면 호출자가 예열을 건너뛴다. 확인할 방법이 없는
+    /// 서버는 `unknown`이라 예열 동작이 그대로다.
+    var health: LLMHealth { get async }
 }
 
 extension TextRefiner {
     func warmUp() async {}
+    var health: LLMHealth { get async { .unknown } }
 }
 
 /// 녹음 오디오(WAV 바이트)를 한 요청으로 다듬은 문장으로 만든다 — 전사와 다듬기를 오디오

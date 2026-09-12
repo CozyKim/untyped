@@ -6,6 +6,8 @@ enum WarmUpState: Equatable, Sendable {
     case notStarted
     case running(for: Duration)
     case finished(in: Duration)
+    /// 서버가 모델이 올라와 있다고 답해(`LLMHealth.loaded`) 예열 요청을 보내지 않았다.
+    case skipped
 }
 
 /// 원본 전사를 넣게 된 원인을 로그에 적을 한 줄로 만든다. 종류만으로 충분한 이유는 nil.
@@ -35,6 +37,10 @@ func fallbackCause(
         switch warmUp {
         case .finished(let took):
             return "예열은 \(seconds(took))초에 끝났으나 다듬기 응답이 \(limit)초 안에 없음 — 로컬 LLM 과부하 또는 긴 입력"
+        case .skipped:
+            // "올라와 있음"은 서버 엔진의 존재 여부라 스왑으로 밀려난 상태를 못 잡는다. 예열을
+            // 건너뛴 탓에 첫 응답이 스왑 복귀 비용을 치렀을 수 있음을 로그가 알려야 한다.
+            return "서버가 모델이 올라와 있다고 답해 예열을 생략했으나 다듬기 응답이 \(limit)초 안에 없음 — 로컬 LLM 과부하, 스왑에서 복귀 중 또는 긴 입력"
         case .running, .notStarted:
             return "다듬기 응답이 \(limit)초 안에 없음"
         }
