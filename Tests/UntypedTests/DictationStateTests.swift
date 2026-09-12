@@ -150,3 +150,29 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
     #expect(DictationState.holding(since: t0, destination: .targetApp).isListening)
     #expect(!DictationState.idle.isListening)
 }
+
+// 중간 전사 미리보기는 지금 녹음의 결과이고 아직 듣는 중일 때만 오버레이에 반영한다.
+// 전사기는 키를 뗀 뒤 마무리 중에도 결과를 보내고, 이전 녹음의 결과 태스크가 다음 녹음이
+// 시작된 뒤 늦게 도착할 수도 있다.
+
+@Test func previewFromCurrentSessionIsAcceptedWhileHolding() {
+    #expect(acceptsPreview(from: 3, current: 3, state: .holding(since: t0, destination: .frontmost)))
+}
+
+@Test func previewFromCurrentSessionIsAcceptedWhileToggled() {
+    #expect(acceptsPreview(from: 3, current: 3, state: .toggled(destination: .targetApp)))
+}
+
+@Test func previewIsDroppedOnceProcessing() {
+    // 키를 뗀 뒤 finalize 중에 오는 마지막 결과. 스피너 아래에 텍스트가 떠서는 안 된다.
+    #expect(!acceptsPreview(from: 3, current: 3, state: .processing))
+}
+
+@Test func previewIsDroppedWhenIdle() {
+    #expect(!acceptsPreview(from: 3, current: 3, state: .idle))
+}
+
+@Test func previewFromEarlierSessionIsDropped() {
+    // 다음 녹음이 이미 시작됐다. 이전 녹음의 늦은 결과가 새 녹음의 미리보기를 덮으면 안 된다.
+    #expect(!acceptsPreview(from: 2, current: 3, state: .holding(since: t0, destination: .frontmost)))
+}

@@ -76,3 +76,10 @@ func reduce(
         return (.processing, .none)
     }
 }
+
+/// 중간 전사 미리보기를 오버레이에 반영할지. 결과를 낸 녹음(`session`)이 지금 녹음이고 아직 듣는
+/// 중일 때만이다. 전사기는 키를 뗀 뒤 마무리 중에도 결과를 보내고, 이전 녹음의 결과가 다음 녹음이
+/// 시작된 뒤 늦게 도착할 수도 있다 — 둘 다 스피너나 새 녹음의 미리보기 위에 떠서는 안 된다.
+func acceptsPreview(from session: Int, current: Int, state: DictationState) -> Bool {
+    session == current && state.isListening
+}

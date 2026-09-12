@@ -73,3 +73,27 @@ private func silence(seconds: Double) async throws -> AnalyzerInput {
 
     #expect(result == "")
 }
+
+private actor PreviewLog {
+    var texts: [String] = []
+    func append(_ text: String) { texts.append(text) }
+}
+
+// 미리보기 분석기를 함께 돌려도 확정 경로는 그대로다 — 무음이면 빈 문자열, 멈추지 않음.
+// 무음에서는 미리보기 콜백도 비지 않은 텍스트를 보내지 않는다.
+@Test func silenceYieldsNoPreviewTextAndEmptyFinal() async throws {
+    let transcriber = Transcriber()
+    let log = PreviewLog()
+    let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+    try await transcriber.begin(inputSequence: stream) { text in
+        Task { await log.append(text) }
+    }
+    continuation.yield(try await silence(seconds: 1.0))
+    continuation.finish()
+
+    let result = await finishOrTimeout(transcriber, seconds: 8)
+
+    #expect(result == "")
+    let texts = await log.texts
+    #expect(texts.allSatisfy { $0.isEmpty })
+}
