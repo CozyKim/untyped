@@ -18,6 +18,8 @@ actor Transcriber {
     /// 결과를 내서 짧은 받아쓰기에서는 키를 쥔 동안 아무것도 오지 않고, 한 분석기에 두 모듈을 붙이면
     /// 빠른 쪽도 느린 쪽에 묶인다. 키를 떼면 마무리하지 않고 바로 버린다.
     private var previewAnalyzer: SpeechAnalyzer?
+    /// 미리보기 분석기의 start(). 확정 경로가 이를 기다리지 않도록 별도 태스크로 돌린다.
+    private var previewStarter: Task<Void, Never>?
     private var previewCollector: Task<Void, Never>?
     private var previewContinuation: AsyncStream<AnalyzerInput>.Continuation?
 
@@ -90,7 +92,7 @@ actor Transcriber {
             throw error
         }
         if let onPreview, let previewStream {
-            await startPreview(inputSequence: previewStream, onPreview: onPreview)
+            startPreview(inputSequence: previewStream, onPreview: onPreview)
         }
     }
 
@@ -98,10 +100,11 @@ actor Transcriber {
         forwardedInputs += 1
     }
 
-    /// 미리보기 분석기를 띄운다. 실패해도 받아쓰기는 계속된다 — 미리보기는 없어도 되는 부가 기능이다.
+    /// 미리보기 분석기를 띄운다. 시작을 기다리지 않는다 — 확정 경로(마이크 준비, 음소거, finalize)가
+    /// 미리보기 때문에 늦어져서는 안 된다. 실패해도 받아쓰기는 계속된다.
     private func startPreview(
         inputSequence: AsyncStream<AnalyzerInput>, onPreview: @escaping @Sendable (String) -> Void
-    ) async {
+    ) {
         let module = SpeechTranscriber(
             locale: locale, transcriptionOptions: [],
             reportingOptions: [.volatileResults, .fastResults], attributeOptions: []
@@ -121,30 +124,38 @@ actor Transcriber {
                 // 취소·오류로 결과가 끊기면 미리보기만 멈춘다. 확정 경로와는 별개다.
             }
         }
-        do {
-            try await engine.start(inputSequence: inputSequence)
-        } catch {
-            NSLog("[Transcriber] 미리보기 시작 실패: %@", String(describing: error))
-            await stopPreview()
+        previewStarter = Task.detached {
+            do {
+                try await engine.start(inputSequence: inputSequence)
+            } catch {
+                NSLog("[Transcriber] 미리보기 시작 실패: %@", String(describing: error))
+            }
         }
     }
 
-    /// 미리보기 분석기를 즉시 버린다. 마무리하지 않는다 — 키를 뗀 뒤의 잠정 결과는 쓸 데가 없고,
-    /// 확정 finalize와 겹쳐 돌면 그만큼 삽입이 늦어진다. 없으면 아무것도 하지 않는다.
-    private func stopPreview() async {
+    /// 미리보기 분석기를 버린다. 마무리하지 않는다 — 키를 뗀 뒤의 잠정 결과는 쓸 데가 없다. 결과
+    /// 태스크와 입력은 여기서 바로 끊고, 분석기 취소는 기다리지 않는다 — 확정 finalize가 그 뒤에
+    /// 줄 서면 그만큼 삽입이 늦어진다. 취소는 start()가 끝난 뒤에 해야 하므로 시작 태스크를 먼저
+    /// 기다린다. 없으면 아무것도 하지 않는다.
+    private func stopPreview() {
         previewCollector?.cancel()
         previewContinuation?.finish()
-        let engine = previewAnalyzer
         previewCollector = nil
         previewContinuation = nil
+        guard let engine = previewAnalyzer else { return }
+        let starter = previewStarter
         previewAnalyzer = nil
-        await engine?.cancelAndFinishNow()
+        previewStarter = nil
+        Task.detached {
+            await starter?.value
+            await engine.cancelAndFinishNow()
+        }
     }
 
     /// 입력 스트림이 닫힌 뒤 호출한다. 남은 결과를 마무리하고 전체 텍스트를 돌려준다.
     func finish() async throws -> String {
         // 키를 뗐다. 미리보기는 여기서 끝이다 — 확정 finalize보다 먼저 버린다.
-        await stopPreview()
+        stopPreview()
         guard let analyzer, let collector else { return "" }
 
         // 스트림은 이미 닫혔으므로 전달이 끝나기를 잠깐 기다리면 개수가 확정된다.
@@ -182,8 +193,8 @@ actor Transcriber {
         self.transcriber = nil
         self.collector = nil
         self.forwarder = nil
+        stopPreview()
 
-        await stopPreview()
         // Analyzer는 자신의 분석 작업으로 인해 자기 자신을 retain하고 있다.
         // 분석을 시작했으면 드롭만으로는 deallocate되지 않으므로 명시적으로 정리해야 한다.
         await session.cancelAndFinishNow()
