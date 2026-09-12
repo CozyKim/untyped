@@ -15,6 +15,16 @@ enum DictationState: Equatable, Sendable {
     case holding(since: ContinuousClock.Instant, destination: InsertDestination)
     case toggled(destination: InsertDestination)
     case processing
+
+    /// 마이크가 켜져 있어야 하는 상태인지 — 키를 쥐고 있거나 토글로 녹음이 이어지는 동안.
+    /// 마이크 준비는 keyDown 뒤 비동기로 끝나므로, 준비가 끝난 시점에 이 값을 봐야
+    /// 그 사이에 키가 올라온 짧은 누름에 뒤늦게 음소거를 걸지 않는다.
+    var isListening: Bool {
+        switch self {
+        case .holding, .toggled: true
+        case .idle, .processing: false
+        }
+    }
 }
 
 enum TriggerEvent: Sendable {

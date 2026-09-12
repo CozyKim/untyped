@@ -164,7 +164,12 @@ final class Coordinator {
             transcriber = newTranscriber
             // 마이크와 분석기가 먼저 돌기 시작한 뒤에 음소거한다. 탭과 aggregate device를
             // 만드는 데 100~200ms가 걸려, 먼저 하면 그만큼 첫 음절을 놓친다.
-            await muter.mute()
+            // 여기까지 오는 데 150ms 이상 걸리므로 짧게 눌렀다 떼면 이미 키가 올라와 있다.
+            // 그때 걸면 finishAndInsert()가 곧 풀긴 해도 뗀 뒤 200~500ms 동안 소리가 끊겼다
+            // 돌아오는 게 들리고, 녹음은 끝났으니 막을 되울림도 없다.
+            if state.isListening {
+                await muter.mute()
+            }
         } catch {
             NSLog("[Coordinator] 녹음 시작 실패: %@", String(describing: error))
             reset()
