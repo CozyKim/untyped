@@ -2,7 +2,10 @@ import Foundation
 
 /// oMLX, Ollama, LM Studio가 모두 같은 형식을 쓴다.
 /// 구현체를 늘리지 않고 baseURL과 model만 바꿔 백엔드를 갈아끼운다.
-struct OpenAICompatibleRefiner: TextRefiner {
+///
+/// 같은 서버가 오디오를 한 요청으로 다듬는 일도 맡는다(`AudioRefiner`). 모델이 오디오 입력을
+/// 받을 때만 동작하며, 텍스트 전용 모델이면 서버가 400을 돌려주고 그 상태 코드가 실패 원인으로 남는다.
+struct OpenAICompatibleRefiner: TextRefiner, AudioRefiner {
     let baseURL: URL
     let model: String
     let apiKey: String?
@@ -10,9 +13,10 @@ struct OpenAICompatibleRefiner: TextRefiner {
     let includeExamples: Bool
     let maxTokens: Int
 
-    private struct Request: Encodable {
+    /// 텍스트 경로는 문자열 메시지만, 오디오 경로는 오디오 파트가 섞인 메시지를 보낸다. 나머지 필드는 같다.
+    private struct Request<Message: Encodable>: Encodable {
         let model: String
-        let messages: [ChatMessage]
+        let messages: [Message]
         let temperature: Double
         let max_tokens: Int
     }
@@ -48,6 +52,17 @@ struct OpenAICompatibleRefiner: TextRefiner {
     }
 
     private func chatRequest(for raw: String, maxTokens: Int) throws -> URLRequest {
+        try chatCompletionsRequest(
+            messages: RefinementPrompt.messages(
+                for: raw, systemPrompt: systemPrompt, includeExamples: includeExamples
+            ),
+            maxTokens: maxTokens
+        )
+    }
+
+    private func chatCompletionsRequest<Message: Encodable>(
+        messages: [Message], maxTokens: Int
+    ) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -56,17 +71,27 @@ struct OpenAICompatibleRefiner: TextRefiner {
         }
         // temperature 0으로 고정한다. 프롬프트가 정해지면 모델의 출력 변동이 없다.
         request.httpBody = try JSONEncoder().encode(
-            Request(model: model,
-                    messages: RefinementPrompt.messages(
-                        for: raw, systemPrompt: systemPrompt, includeExamples: includeExamples
-                    ),
-                    temperature: 0, max_tokens: maxTokens)
+            Request(model: model, messages: messages, temperature: 0, max_tokens: maxTokens)
         )
         return request
     }
 
     func refine(_ raw: String) async throws -> String {
-        let request = try chatRequest(for: raw, maxTokens: maxTokens)
+        try await completionText(for: chatRequest(for: raw, maxTokens: maxTokens))
+    }
+
+    /// 녹음 전체를 같은 프롬프트·예시 뒤에 붙여 한 요청으로 다듬는다. 출력 상한도 같다 —
+    /// 결과가 그보다 길면 잘린 채 넣지 않고 실패로 처리해 사용자가 상한을 올리게 한다.
+    func refine(wav: Data) async throws -> String {
+        try await completionText(for: chatCompletionsRequest(
+            messages: RefinementPrompt.audioMessages(
+                wav: wav, systemPrompt: systemPrompt, includeExamples: includeExamples
+            ),
+            maxTokens: maxTokens
+        ))
+    }
+
+    private func completionText(for request: URLRequest) async throws -> String {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RefinerError.badStatus(0) }
         guard http.statusCode == 200 else { throw RefinerError.badStatus(http.statusCode) }

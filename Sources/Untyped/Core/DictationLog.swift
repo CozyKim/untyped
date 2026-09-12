@@ -13,9 +13,35 @@ enum DictationLog {
             .appendingPathComponent("dictation.log", isDirectory: false)
     }
 
+    /// raw가 nil이면 오디오를 LLM에 한 요청으로 보낸 경우다 — 원문이 없으므로 STT 줄을 쓰지 않고
+    /// 헤더에 그 사실을 남긴다.
     static func entry(
-        raw: String, outcome: RefineOutcome, recorded: Duration,
+        raw: String?, outcome: RefineOutcome, recorded: Duration,
         at date: Date, timeZone: TimeZone = .current, cause: String? = nil
+    ) -> String {
+        let status = switch outcome {
+        case .refined: raw == nil ? "오디오에서 바로 다듬음" : "다듬음"
+        case .fallback(_, let reason): "원본 (\(reason.label))"
+        }
+        let sttLine = raw.map { "STT : \($0)\n" } ?? ""
+        return """
+        \(header(status: status, recorded: recorded, at: date, timeZone: timeZone))
+        \(causeLine(cause))\(sttLine)결과: \(outcome.text)
+
+        """
+    }
+
+    /// 아무것도 넣지 않은 받아쓰기 — 오디오를 한 요청으로 다듬다 실패해 원문도 결과도 없다.
+    static func failureEntry(
+        label: String, recorded: Duration,
+        at date: Date, timeZone: TimeZone = .current, cause: String? = nil
+    ) -> String {
+        header(status: "삽입 안 함 (\(label))", recorded: recorded, at: date, timeZone: timeZone)
+            + "\n" + causeLine(cause)
+    }
+
+    private static func header(
+        status: String, recorded: Duration, at date: Date, timeZone: TimeZone
     ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -23,18 +49,12 @@ enum DictationLog {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let seconds = Double(recorded.components.seconds)
             + Double(recorded.components.attoseconds) / 1e18
-        let status = switch outcome {
-        case .refined: "다듬음"
-        case .fallback(_, let reason): "원본 (\(reason.label))"
-        }
-        // 원인은 헤더 바로 아래에 둔다. 무슨 일이 있었는지를 본문(STT·결과)보다 먼저 읽게 한다.
-        let causeLine = cause.map { "원인: \($0)\n" } ?? ""
-        return """
-        [\(formatter.string(from: date))] 녹음 \(String(format: "%.1f", seconds))초 · \(status)
-        \(causeLine)STT : \(raw)
-        결과: \(outcome.text)
+        return "[\(formatter.string(from: date))] 녹음 \(String(format: "%.1f", seconds))초 · \(status)"
+    }
 
-        """
+    /// 원인은 헤더 바로 아래에 둔다. 무슨 일이 있었는지를 본문(STT·결과)보다 먼저 읽게 한다.
+    private static func causeLine(_ cause: String?) -> String {
+        cause.map { "원인: \($0)\n" } ?? ""
     }
 
     static func append(_ entry: String, to url: URL, maxBytes: Int = maxBytes) throws {

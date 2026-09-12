@@ -28,6 +28,7 @@ private func temporaryFileURL() -> URL {
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
         "press_return", "target_app_press_return", "press_return_on_fallback",
+        "transcription_backend",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -298,4 +299,39 @@ private let sampleWithTargetApp: AppConfig = {
     config.targetAppPressReturn = false
     #expect(config.pressesReturn(for: .frontmost, outcome: fallback) == false)
     #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
+}
+
+@Test func transcriptionBackendDefaultsToAppleAndRoundTrips() throws {
+    // 기본은 Apple — 기존 사용자의 동작이 바뀌면 안 된다.
+    #expect(AppConfig.defaultConfig.transcriptionBackend == .apple)
+    let data = try JSONEncoder().encode(sample)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["transcription_backend"] as? String == "apple")
+
+    var custom = sample
+    custom.transcriptionBackend = .llmAudio
+    let customData = try JSONEncoder().encode(custom)
+    let customObject = try #require(JSONSerialization.jsonObject(with: customData) as? [String: Any])
+    #expect(customObject["transcription_backend"] as? String == "llm_audio")
+    #expect(try JSONDecoder().decode(AppConfig.self, from: customData) == custom)
+}
+
+@Test func legacyFileWithoutTranscriptionBackendReadsApple() throws {
+    let json = """
+    {"api_key":"sk-legacy","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.transcriptionBackend == .apple)
+    #expect(decoded.apiKey == "sk-legacy")
+}
+
+@Test func unknownTranscriptionBackendFallsBackToAppleAndKeepsOtherFields() throws {
+    // hotkey와 같은 규칙 — 이 필드 하나 때문에 파일 전체가 거부되면 안 된다.
+    let json = """
+    {"api_key":"sk-keep","base_url":"http://127.0.0.1:8081/v1","model":"m","transcription_backend":"whisper","toggle_enabled":false}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.transcriptionBackend == .apple)
+    #expect(decoded.apiKey == "sk-keep")
+    #expect(decoded.toggleEnabled == false)
 }

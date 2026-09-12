@@ -72,6 +72,29 @@ enum RefinementPrompt {
     /// 다른 프롬프트(예: 번역)를 쓰면 예시가 지시보다 세게 작용해 지시가 무시되므로
     /// 호출자가 예시를 뺄 수 있어야 한다.
     static func messages(for raw: String, systemPrompt: String, includeExamples: Bool) -> [ChatMessage] {
+        prefix(systemPrompt: systemPrompt, includeExamples: includeExamples)
+            + [ChatMessage(role: "user", content: raw)]
+    }
+
+    /// 오디오를 한 요청으로 다듬을 때 오디오 파트 뒤에 붙이는 지시. 시스템 프롬프트와 예시는
+    /// "원문 텍스트"를 전제로 쓰였으므로, 오디오가 그 원문 자리라는 것을 한 줄로 알린다.
+    static let audioInstruction = "이 음성이 받아쓰기 원문이다. 받아쓴 뒤 규칙대로 다듬은 문장만 출력한다."
+
+    /// 텍스트 경로와 같은 시스템 프롬프트·예시 뒤에, 원문 대신 녹음 오디오를 붙인다. 프리픽스가
+    /// 바이트 단위로 같아 서버의 프리픽스 캐시가 텍스트 경로와 공유된다. 전사 단계가 따로
+    /// 없으므로 실패하면 넣을 원본이 없다 — 그 대신 요청이 한 번이다.
+    static func audioMessages(
+        wav: Data, systemPrompt: String, includeExamples: Bool
+    ) -> [MultipartChatMessage] {
+        prefix(systemPrompt: systemPrompt, includeExamples: includeExamples)
+            .map { MultipartChatMessage(role: $0.role, content: .text($0.content)) }
+            + [MultipartChatMessage(role: "user", content: .parts([
+                .inputAudio(base64: wav.base64EncodedString(), format: "wav"),
+                .text(audioInstruction),
+            ]))]
+    }
+
+    private static func prefix(systemPrompt: String, includeExamples: Bool) -> [ChatMessage] {
         var messages = [ChatMessage(role: "system", content: systemPrompt)]
         if includeExamples {
             for (input, output) in examples {
@@ -79,7 +102,6 @@ enum RefinementPrompt {
                 messages.append(ChatMessage(role: "assistant", content: output))
             }
         }
-        messages.append(ChatMessage(role: "user", content: raw))
         return messages
     }
 }

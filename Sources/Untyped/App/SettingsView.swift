@@ -72,6 +72,13 @@ struct SettingsView: View {
                 }
             }
             Section("받아쓰기") {
+                Picker("전사 방식", selection: $draft.transcriptionBackend) {
+                    Text("2단계 — Apple 음성 인식 후 LLM이 다듬기").tag(TranscriptionBackend.apple)
+                    Text("1단계 — 오디오를 LLM에 보내 한 번에 다듬기").tag(TranscriptionBackend.llmAudio)
+                }
+                Text("1단계는 위 서버의 모델이 오디오 입력을 받아야 합니다(예: gemma-4-e2b-it). 같은 프롬프트와 예시 뒤에 녹음을 붙여 한 요청으로 보냅니다. 원본 전사가 없으므로 실패하면 아무것도 넣지 않습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("단축키", selection: $draft.hotkey) {
                     ForEach(HotkeyKey.allCases, id: \.self) { key in
                         Text(key.displayName).tag(key)

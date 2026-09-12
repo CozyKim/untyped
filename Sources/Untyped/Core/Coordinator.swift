@@ -18,12 +18,16 @@ final class Coordinator {
 
     private let overlay = OverlayController()
     private var refiner: any TextRefiner
+    /// 오디오를 한 요청으로 다듬는 쪽. 텍스트 다듬기와 같은 서버 클라이언트다.
+    private var audioRefiner: any AudioRefiner
     private var hotkey: HotkeyMonitor?
     /// 앱으로 보내기 단축키. 설정에 없으면 nil.
     private var targetAppHotkey: HotkeyMonitor?
     private var availabilityPoll: Task<Void, Never>?
     private var capture: AudioCapture?
+    /// 녹음을 받는 쪽. 설정의 전사 방식에 따라 둘 중 하나만 있다.
     private var transcriber: Transcriber?
+    private var recorder: AudioRecorder?
     private let muter = SystemAudioMuter()
     /// beginCapture()를 감싼 핸들. 짧게 눌렀다 떼면 setup이 끝나기 전에
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
@@ -38,7 +42,9 @@ final class Coordinator {
 
     init(config: AppConfig) {
         self.config = config
-        self.refiner = Self.makeRefiner(config)
+        let client = Self.makeClient(config)
+        self.refiner = client
+        self.audioRefiner = client
     }
 
     func start() {
@@ -51,7 +57,9 @@ final class Coordinator {
     func apply(_ newConfig: AppConfig) {
         let previous = config
         config = newConfig
-        refiner = Self.makeRefiner(newConfig)
+        let client = Self.makeClient(newConfig)
+        refiner = client
+        audioRefiner = client
         // 키가 같으면 모니터를 그대로 둔다 — 교체하면 진행 중인 hold의 뗌을 놓친다.
         // start() 전이면(hotkey == nil) start()가 config로 설치하므로 여기서 만들지 않는다.
         if hotkey != nil {
@@ -68,7 +76,8 @@ final class Coordinator {
     }
 
     /// 다듬기 백엔드는 OpenAI 호환 서버 하나뿐이다. 설정으로 주소·모델·키만 갈아끼운다.
-    private static func makeRefiner(_ config: AppConfig) -> any TextRefiner {
+    /// 같은 서버가 오디오를 한 요청으로 다듬는 일도 맡는다.
+    private static func makeClient(_ config: AppConfig) -> OpenAICompatibleRefiner {
         OpenAICompatibleRefiner(
             baseURL: config.baseURL, model: config.model, apiKey: config.apiKeyOrNil,
             systemPrompt: config.systemPrompt ?? RefinementPrompt.defaultSystemPrompt,
@@ -153,8 +162,14 @@ final class Coordinator {
         // 겹쳐 돌려 음소거가 걸리는 시점을 늦추지 않는다.
         async let renderers = muter.tapRenderers()
         do {
-            let format = try await Transcriber.targetAudioFormat()
-            let newTranscriber = Transcriber()
+            // 백엔드는 녹음 시작 시점의 설정을 따른다. 녹음 중에 바뀌어도 이 녹음은 시작한
+            // 쪽이 받는다 — finishAndInsert()는 어느 싱크가 살아 있는지로 판단한다.
+            let backend = config.transcriptionBackend
+            let format: AVAudioFormat
+            switch backend {
+            case .apple: format = try await Transcriber.targetAudioFormat()
+            case .llmAudio: format = AudioRecorder.format
+            }
             let newCapture = AudioCapture(targetFormat: format) { [weak self] value in
                 Task { @MainActor in
                     self?.level = value
@@ -162,9 +177,17 @@ final class Coordinator {
                 }
             }
             let stream = try await newCapture.start()
-            try await newTranscriber.begin(inputSequence: stream)
+            switch backend {
+            case .apple:
+                let newTranscriber = Transcriber()
+                try await newTranscriber.begin(inputSequence: stream)
+                transcriber = newTranscriber
+            case .llmAudio:
+                let newRecorder = AudioRecorder()
+                await newRecorder.begin(inputSequence: stream)
+                recorder = newRecorder
+            }
             capture = newCapture
-            transcriber = newTranscriber
             // 마이크와 분석기가 먼저 돌기 시작한 뒤에 음소거한다. 탭과 aggregate device를
             // 만드는 데 100~200ms가 걸려, 먼저 하면 그만큼 첫 음절을 놓친다.
             // 여기까지 오는 데 150ms 이상 걸리므로 짧게 눌렀다 떼면 이미 키가 올라와 있다.
@@ -186,21 +209,41 @@ final class Coordinator {
         // 오판해 즉시 idle로 돌아가는데, beginCapture()는 뒤늦게 계속 진행되어
         // 아무도 멈추지 않는 마이크와 SpeechAnalyzer를 남긴다.
         await captureSetup?.value
-        guard let capture, let transcriber else { reset(); return }
+        guard let capture else { reset(); return }
         let recorded = await capture.recordedDuration
         await capture.stop()
         // 다듬는 동안에는 소리가 돌아와 있어야 하므로 삽입까지 기다리지 않는다.
         await muter.unmute()
 
-        let raw = (try? await transcriber.finish()) ?? ""
-        // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
-        guard !raw.isEmpty else { reset(); return }
-
         // 삽입 중에 설정이 교체돼도 로그는 실제로 다듬기를 시도한 서버를 가리켜야 한다.
         let refiner = refiner
         let baseURL = config.baseURL
-        let timeout = refineTimeout(for: recorded, base: .seconds(config.refineTimeoutSeconds))
-        let outcome = await refineOrFallback(raw, using: refiner, timeout: timeout)
+        let base: Duration = .seconds(config.refineTimeoutSeconds)
+        // 2단계(Apple)는 원문이 있어 다듬기가 실패해도 원본을 넣는다. 1단계(LLM 오디오)는 원문이
+        // 없어 실패하면 아무것도 넣지 않는다 — 그 경우는 refineAudioOrGiveUp()이 알림·로그까지 마친다.
+        let raw: String?
+        let timeout: Duration
+        let outcome: RefineOutcome
+        if let transcriber {
+            let text = (try? await transcriber.finish()) ?? ""
+            // 빈 문자열이면 아무 동작도 하지 않는다. 빈 붙여넣기를 막는다.
+            guard !text.isEmpty else { reset(); return }
+            raw = text
+            timeout = refineTimeout(for: recorded, base: base)
+            outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
+        } else if let recorder {
+            let wav = await recorder.finish()
+            guard !wav.isEmpty else { reset(); return }
+            raw = nil
+            timeout = audioRefineTimeout(for: recorded, base: base)
+            guard let text = await refineAudioOrGiveUp(
+                wav, timeout: timeout, recorded: recorded, refiner: refiner, baseURL: baseURL
+            ) else { return }
+            outcome = .refined(text)
+        } else {
+            reset()
+            return
+        }
         // 예열 상태는 다듬기가 끝난 직후에 읽는다. 로그는 삽입 뒤에 쓰는데 그때는 다음 녹음이
         // 시작돼 예열 시각이 덮여 있을 수 있다.
         let warmUp = warmUpState(now: .now)
@@ -230,23 +273,59 @@ final class Coordinator {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
         if config.logEnabled, let url = DictationLog.fileURL {
-            let cause = await fallbackCause(
-                for: outcome, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
-            )
+            var cause: String?
+            if case .fallback(_, let reason) = outcome {
+                cause = await fallbackCause(
+                    for: reason, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
+                )
+            }
             let entry = DictationLog.entry(
                 raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause
             )
-            // 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다. 다만 연결
-            // 확인이 최대 2초라 다음 받아쓰기의 로그가 먼저 도착할 수 있으므로, 직전 쓰기를
-            // 기다려 순서를 지킨다 — FileHandle의 seek+write는 두 작업이 겹치면 서로 덮어쓴다.
-            let previous = logWrite
-            logWrite = Task.detached {
-                await previous?.value
-                do {
-                    try DictationLog.append(entry, to: url)
-                } catch {
-                    NSLog("[Coordinator] 로그 기록 실패: %@", String(describing: error))
-                }
+            appendLog(entry, to: url)
+        }
+    }
+
+    /// 오디오를 한 요청으로 다듬는다. 실패하면 넣을 원본이 없다 — Apple 전사로 몰래 대체하지
+    /// 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고 실패를 알리고 로그에 원인을 남긴 뒤
+    /// nil을 돌려준다.
+    private func refineAudioOrGiveUp(
+        _ wav: Data, timeout: Duration, recorded: Duration,
+        refiner: any TextRefiner, baseURL: URL
+    ) async -> String? {
+        let audioRefiner = audioRefiner
+        switch await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) }) {
+        case .text(let text):
+            return text
+        case .failed(let reason):
+            let warmUp = warmUpState(now: .now)
+            let loggedAt = Date()
+            reset()
+            overlay.showNotice("\(reason.label) — 삽입 안 함")
+            if config.logEnabled, let url = DictationLog.fileURL {
+                let cause = await fallbackCause(
+                    for: reason, timeout: timeout, warmUp: warmUp, refiner: refiner, baseURL: baseURL
+                )
+                let entry = DictationLog.failureEntry(
+                    label: reason.label, recorded: recorded, at: loggedAt, cause: cause
+                )
+                appendLog(entry, to: url)
+            }
+            return nil
+        }
+    }
+
+    /// 파일 쓰기는 삽입이 끝난 뒤의 부수 작업이라 메인 액터를 붙들지 않는다. 다만 연결
+    /// 확인이 최대 2초라 다음 받아쓰기의 로그가 먼저 도착할 수 있으므로, 직전 쓰기를
+    /// 기다려 순서를 지킨다 — FileHandle의 seek+write는 두 작업이 겹치면 서로 덮어쓴다.
+    private func appendLog(_ entry: String, to url: URL) {
+        let previous = logWrite
+        logWrite = Task.detached {
+            await previous?.value
+            do {
+                try DictationLog.append(entry, to: url)
+            } catch {
+                NSLog("[Coordinator] 로그 기록 실패: %@", String(describing: error))
             }
         }
     }
@@ -257,13 +336,12 @@ final class Coordinator {
         return .running(for: now - startedAt)
     }
 
-    /// 폴백일 때만 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결 확인(최대 2초)은 삽입과
-    /// 상태 초기화가 끝난 뒤에 하므로 사용자를 기다리게 하지 않는다.
+    /// 폴백이나 오디오 다듬기 실패일 때 로그에 적을 원인을 판정한다. 로컬 LLM 서버 연결
+    /// 확인(최대 2초)은 삽입과 상태 초기화가 끝난 뒤에 하므로 사용자를 기다리게 하지 않는다.
     private func fallbackCause(
-        for outcome: RefineOutcome, timeout: Duration, warmUp: WarmUpState,
+        for reason: FallbackReason, timeout: Duration, warmUp: WarmUpState,
         refiner: any TextRefiner, baseURL: URL
     ) async -> String? {
-        guard case .fallback(_, let reason) = outcome else { return nil }
         switch reason {
         case .timeout, .failed:
             let reachable = await refiner.isAvailable
@@ -279,6 +357,7 @@ final class Coordinator {
     private func reset() {
         capture = nil
         transcriber = nil
+        recorder = nil
         captureSetup = nil
         level = 0
         overlay.hide()

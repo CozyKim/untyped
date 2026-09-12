@@ -1,5 +1,14 @@
 import Foundation
 
+/// 말소리가 다듬은 문장이 되기까지의 경로.
+enum TranscriptionBackend: String, Codable, CaseIterable, Sendable {
+    /// 2단계 — Apple의 기기 내 SpeechAnalyzer로 전사한 뒤 LLM이 텍스트를 다듬는다. 기본값.
+    case apple
+    /// 1단계 — 녹음 오디오를 다듬기 서버의 LLM에 보내 전사와 다듬기를 한 요청으로 한다.
+    /// 모델이 오디오 입력을 받아야 한다(예: gemma-4-e2b-it). SpeechAnalyzer는 쓰지 않는다.
+    case llmAudio = "llm_audio"
+}
+
 /// 사용자 설정. ~/Library/Application Support/Untyped/config.json에서 읽고 쓴다.
 ///
 /// GUI 앱은 셸 환경변수를 물려받지 않으므로 API 키 같은 값은 환경변수로 전달할
@@ -42,6 +51,9 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// 다듬기 실패로 원본 전사가 들어간 경우에도 Return을 누를지. 두 경로에 모두 적용된다.
     /// 원본에는 군말·정정이 남아 있을 수 있어 보내기 전에 손볼 기회를 주는 것이 기본이다.
     var pressReturnOnFallback: Bool = false
+    /// 전사 경로. 1단계(LLM 오디오)는 실패하면 넣을 원본이 없어 아무것도 넣지 않으므로
+    /// 기본은 Apple 2단계다.
+    var transcriptionBackend: TranscriptionBackend = .apple
 
     private enum CodingKeys: String, CodingKey {
         case baseURL = "base_url"
@@ -59,6 +71,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         case pressReturn = "press_return"
         case targetAppPressReturn = "target_app_press_return"
         case pressReturnOnFallback = "press_return_on_fallback"
+        case transcriptionBackend = "transcription_backend"
     }
 
     static let defaultConfig = AppConfig(
@@ -162,6 +175,10 @@ extension AppConfig {
             ?? Self.defaultConfig.targetAppPressReturn
         pressReturnOnFallback = try container.decodeIfPresent(Bool.self, forKey: .pressReturnOnFallback)
             ?? Self.defaultConfig.pressReturnOnFallback
+        // hotkey와 같은 규칙 — 모르는 문자열이면 기본값. 파일 전체를 거부하지 않는다.
+        let rawBackend = try container.decodeIfPresent(String.self, forKey: .transcriptionBackend)
+        transcriptionBackend = rawBackend.flatMap(TranscriptionBackend.init(rawValue:))
+            ?? Self.defaultConfig.transcriptionBackend
     }
 }
 
