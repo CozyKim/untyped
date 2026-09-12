@@ -54,6 +54,9 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// 전사 경로. 1단계(LLM 오디오)는 실패하면 넣을 원본이 없어 아무것도 넣지 않으므로
     /// 기본은 Apple 2단계다.
     var transcriptionBackend: TranscriptionBackend = .apple
+    /// 키를 누를 때 다듬기 서버를 예열할지(health 확인 뒤 필요하면 1토큰 요청). 모델이 항상
+    /// 올라와 있는 서버에서는 녹음 시작과 겹치는 요청이 부하만 되므로 끌 수 있다.
+    var warmUpEnabled: Bool = true
     /// 다듬기 서버의 모델이 유휴 TTL로 내려가지 않게 주기적으로 1토큰 요청을 보낼지. 서버가 모델을
     /// 고정(pin)할 수 없는 환경을 위한 것이라 기본은 꺼짐이다 — 기존 사용자의 서버에 갑자기
     /// 주기적인 요청이 가면 안 된다.
@@ -78,6 +81,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         case targetAppPressReturn = "target_app_press_return"
         case pressReturnOnFallback = "press_return_on_fallback"
         case transcriptionBackend = "transcription_backend"
+        case warmUpEnabled = "warm_up_enabled"
         case keepAliveEnabled = "keep_alive_enabled"
         case keepAliveInterval = "keep_alive_interval_minutes"
     }
@@ -187,6 +191,8 @@ extension AppConfig {
         let rawBackend = try container.decodeIfPresent(String.self, forKey: .transcriptionBackend)
         transcriptionBackend = rawBackend.flatMap(TranscriptionBackend.init(rawValue:))
             ?? Self.defaultConfig.transcriptionBackend
+        warmUpEnabled = try container.decodeIfPresent(Bool.self, forKey: .warmUpEnabled)
+            ?? Self.defaultConfig.warmUpEnabled
         keepAliveEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepAliveEnabled)
             ?? Self.defaultConfig.keepAliveEnabled
         // 선택지에 없는 분 값이면 기본값. 켜짐 여부는 그대로 둔다.

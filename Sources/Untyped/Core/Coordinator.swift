@@ -153,20 +153,25 @@ final class Coordinator {
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
             // 서버가 모델이 이미 올라와 있다고 답하면(oMLX /health) 1토큰 요청도 보내지 않는다 —
             // 녹음 시작과 겹치는 부하를 줄인다. 확인이 안 되는 서버는 지금까지처럼 예열한다.
-            let refiner = refiner
-            let startedAt = ContinuousClock.now
-            warmUpStartedAt = startedAt
+            // 예열을 꺼 두면 health 확인도 하지 않는다 — 그 결과로 정하는 일이 예열뿐이다.
+            // 상태는 매번 비워 이전 녹음의 예열 시각이 이번 로그에 섞이지 않게 한다.
+            warmUpStartedAt = nil
             warmUpFinishedAt = nil
             warmUpSkipped = false
-            Task { [weak self] in
-                let needsWarmUp = await refiner.health.needsWarmUp
-                if needsWarmUp {
-                    await refiner.warmUp()
+            if config.warmUpEnabled {
+                let refiner = refiner
+                let startedAt = ContinuousClock.now
+                warmUpStartedAt = startedAt
+                Task { [weak self] in
+                    let needsWarmUp = await refiner.health.needsWarmUp
+                    if needsWarmUp {
+                        await refiner.warmUp()
+                    }
+                    // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
+                    guard let self, self.warmUpStartedAt == startedAt else { return }
+                    self.warmUpSkipped = !needsWarmUp
+                    self.warmUpFinishedAt = .now
                 }
-                // 다음 녹음이 이미 시작됐으면 그쪽 예열이 기준이므로 덮어쓰지 않는다.
-                guard let self, self.warmUpStartedAt == startedAt else { return }
-                self.warmUpSkipped = !needsWarmUp
-                self.warmUpFinishedAt = .now
             }
             captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess(let destination):

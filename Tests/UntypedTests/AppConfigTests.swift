@@ -28,7 +28,7 @@ private func temporaryFileURL() -> URL {
         "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
         "press_return", "target_app_press_return", "press_return_on_fallback",
-        "transcription_backend", "keep_alive_enabled", "keep_alive_interval_minutes",
+        "transcription_backend", "warm_up_enabled", "keep_alive_enabled", "keep_alive_interval_minutes",
     ])
     #expect(object["base_url"] as? String == "http://localhost:11434/v1")
     #expect(object["hotkey"] as? String == "right_command")
@@ -388,4 +388,26 @@ private let sampleWithTargetApp: AppConfig = {
     #expect(config.keepAlivePeriod == .seconds(300))
     config.keepAliveInterval = .oneMinute
     #expect(config.keepAlivePeriod == .seconds(60))
+}
+
+// MARK: - 예열
+
+@Test func warmUpDefaultsToOnAndRoundTrips() throws {
+    // 기본은 켜짐 — 설정이 생기기 전과 같은 동작이어야 한다.
+    #expect(AppConfig.defaultConfig.warmUpEnabled == true)
+    var custom = sample
+    custom.warmUpEnabled = false
+    let data = try JSONEncoder().encode(custom)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["warm_up_enabled"] as? Bool == false)
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+}
+
+@Test func legacyFileWithoutWarmUpFieldReadsOn() throws {
+    let json = """
+    {"api_key":"sk-legacy","base_url":"http://127.0.0.1:8081/v1","model":"m"}
+    """
+    let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+    #expect(decoded.warmUpEnabled == true)
+    #expect(decoded.apiKey == "sk-legacy")
 }

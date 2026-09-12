@@ -43,6 +43,10 @@ struct SettingsView: View {
                 Text("여기에 녹음 길이의 40%가 더해집니다. 그 안에 응답이 없으면 원본 전사를 넣습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("키를 누를 때 예열", isOn: $draft.warmUpEnabled)
+                Text("녹음을 시작하는 순간 서버에 모델이 올라와 있는지 묻고, 없으면 1토큰 요청으로 미리 올립니다. 모델이 항상 올라와 있는 서버라면 꺼서 녹음 시작과 겹치는 요청을 없앨 수 있습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("모델 유지 (Keep Alive)", isOn: $draft.keepAliveEnabled)
                 Picker("유지 요청 간격", selection: $draft.keepAliveInterval) {
                     ForEach(KeepAliveInterval.allCases, id: \.self) { interval in
