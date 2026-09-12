@@ -110,6 +110,7 @@ ad-hoc 서명은 빌드마다 designated requirement가 바뀌는데 macOS는 �
 | 앱으로 보내기 단축키 | `target_app_hotkey` | *(없음 = 꺼짐)* | 두 번째 단독 수식키. `hotkey`와 달라야 함 |
 | 대상 앱 | `target_app_bundle_id` | *(없음)* | 보낼 앱의 bundle ID. 설정 창의 파일 선택 창에서 앱을 골라 채움 |
 | 앱으로 보내기 · 넣은 뒤 Return 누르기 | `target_app_press_return` | `false` | 대상 앱에 넣은 뒤 Return |
+| 전사 방식 | `transcription_backend` | `apple` | `apple` = 2단계: 기기 내 `SpeechAnalyzer` → LLM이 텍스트를 다듬음. `llm_audio` = 1단계, Apple STT 없음: 녹음(16 kHz mono WAV, `input_audio` 파트)을 같은 시스템 프롬프트·예시 뒤에 붙여 보내면 모델이 다듬은 문장을 바로 돌려줌. 모델이 오디오 입력을 받아야 함(예: `gemma-4-e2b-it`). 폴백할 원본 전사가 없으므로 실패하면(서버 꺼짐, 모델이 오디오 거부, 대기 시간 = *다듬기 대기 시간* + 녹음 길이 초과, 잘림·빈 결과) 아무것도 넣지 않고 알림·로그에 이유를 남김 |
 | 받아쓰기 기록 | `log_enabled` | `true` | [로그](#로그) 참고 |
 | 로그인할 때 자동으로 시작 | *(파일에 없음)* | 꺼짐 | macOS 로그인 항목(`SMAppService`). 상태는 시스템이 가지므로 시스템 설정 › 일반 › 로그인 항목에도 나타남 |
 
@@ -169,9 +170,11 @@ Sources/Untyped/
               AudioLevel.swift         RMS
               SystemAudioMuter.swift   녹음 중 다른 앱 출력 음소거
   Transcribe/ Transcriber.swift        SpeechAnalyzer → String
+              AudioRecorder.swift      PCM 버퍼 → WAV 바이트 (`llm_audio`용)
   Refine/     TextRefiner.swift        protocol, 폴백 정책, 타임아웃
-              OpenAICompatibleRefiner.swift
-              RefinementPrompt.swift   규칙 4개 + 용어 사전 + few-shot 8쌍
+              OpenAICompatibleRefiner.swift   같은 서버로 텍스트 다듬기, 또는 오디오를 한 요청으로 다듬기
+              RefinementPrompt.swift   규칙 4개 + 용어 사전 + few-shot 8쌍; 마지막 턴이 텍스트 또는 오디오
+              MultipartChatMessage.swift  content가 문자열 또는 `input_audio`/`text` 파트인 채팅 메시지
   Output/     TextInserter.swift       클립보드 백업 → ⌘V → 복원
               TargetApp.swift          지정 앱 활성화 → TextInserter → 원래 앱 복귀
 ```

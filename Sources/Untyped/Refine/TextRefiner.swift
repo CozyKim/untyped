@@ -12,6 +12,12 @@ extension TextRefiner {
     func warmUp() async {}
 }
 
+/// 녹음 오디오(WAV 바이트)를 한 요청으로 다듬은 문장으로 만든다 — 전사와 다듬기를 오디오
+/// 입력을 받는 LLM이 한 번에 한다. 마이크도 포맷 변환도 모른다 — 완성된 파일 바이트만 받는다.
+protocol AudioRefiner: Sendable {
+    func refine(wav: Data) async throws -> String
+}
+
 /// 녹음 길이에 비례하는 타임아웃. 고정값만 쓰면 긴 발화가 항상 폴백된다.
 /// 기본값(base)은 모델 로드·프리필 같은 고정 비용 몫이라 녹음 길이와 무관하게
 /// 사용자가 조절한다 — 메모리가 부족해 모델이 스왑에서 돌아오는 기기에서는 이 몫이 커진다.
@@ -19,7 +25,16 @@ func refineTimeout(for recorded: Duration, base: Duration) -> Duration {
     base + recorded * 0.4
 }
 
+/// 오디오를 한 요청으로 다듬을 때의 타임아웃. 같은 기본값을 쓰되 녹음 길이를 40%가 아니라
+/// 전부 더한다 — 오디오 토큰을 프리필하고 발화를 듣고 써내는 일이 한 요청에 들어가고, 시간이
+/// 초과되면 넣을 원본이 없어 받아쓰기 한 번이 통째로 사라지므로 텍스트 다듬기보다 넉넉히 기다린다.
+func audioRefineTimeout(for recorded: Duration, base: Duration) -> Duration {
+    base + recorded
+}
+
 /// 원본 전사를 넣게 된 이유. 오버레이 알림과 로그가 같은 문구를 쓴다.
+/// 오디오를 한 요청으로 다듬다 실패한 이유로도 쓴다 — 같은 서버에 같은 방식으로 묻기 때문에
+/// 실패의 종류가 같다. 다만 그때는 넣을 원본이 없어 "원본 삽입" 대신 "삽입 안 함"이 된다.
 enum FallbackReason: Equatable, Sendable {
     case noRefiner
     case timeout
@@ -82,23 +97,25 @@ enum RefineOutcome: Equatable, Sendable {
     }
 }
 
-/// 다듬기가 실패하거나 늦으면 원본 전사를 그대로 돌려준다.
-/// 다듬기는 품질 향상 레이어이지 필수 경로가 아니다. 어느 쪽이었는지를 함께
-/// 돌려주어 호출자가 사용자에게 알리고 기록할 수 있게 한다.
-func refineOrFallback(
-    _ raw: String,
-    using refiner: (any TextRefiner)?,
-    timeout: Duration
-) async -> RefineOutcome {
-    guard let refiner else { return .fallback(raw, .noRefiner) }
+/// LLM에 텍스트 하나를 요구한 결과. 시간 초과·요청 실패·빈 결과를 한 이유 체계로 묶는다.
+enum LLMTextResult: Equatable, Sendable {
+    case text(String)
+    case failed(FallbackReason)
+}
 
+/// LLM 요청을 타임아웃과 경쟁시킨다. 텍스트 다듬기와 오디오 다듬기가 같은 정책을 쓴다 —
+/// 늦으면 취소하고, 오류는 로그용 원인으로 바꾸고, 공백뿐인 결과는 실패로 친다.
+func requestLLMText(
+    timeout: Duration,
+    _ request: @escaping @Sendable () async throws -> String
+) async -> LLMTextResult {
     enum Race: Sendable {
         case finished(Result<String, any Error>)
         case timedOut
     }
     let race = await withTaskGroup(of: Race.self) { group in
         group.addTask {
-            do { return .finished(.success(try await refiner.refine(raw))) }
+            do { return .finished(.success(try await request())) }
             catch { return .finished(.failure(error)) }
         }
         group.addTask {
@@ -113,15 +130,30 @@ func refineOrFallback(
 
     switch race {
     case .timedOut:
-        return .fallback(raw, .timeout)
+        return .failed(.timeout)
     case .finished(.failure(let error)):
         if let refinerError = error as? RefinerError, case .truncated = refinerError {
-            return .fallback(raw, .truncated)
+            return .failed(.truncated)
         }
-        return .fallback(raw, .failed(detail: failureDetail(of: error)))
+        return .failed(.failed(detail: failureDetail(of: error)))
     case .finished(.success(let text)):
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .fallback(raw, .emptyResult) }
-        return .refined(trimmed)
+        guard !trimmed.isEmpty else { return .failed(.emptyResult) }
+        return .text(trimmed)
+    }
+}
+
+/// 다듬기가 실패하거나 늦으면 원본 전사를 그대로 돌려준다.
+/// 다듬기는 품질 향상 레이어이지 필수 경로가 아니다. 어느 쪽이었는지를 함께
+/// 돌려주어 호출자가 사용자에게 알리고 기록할 수 있게 한다.
+func refineOrFallback(
+    _ raw: String,
+    using refiner: (any TextRefiner)?,
+    timeout: Duration
+) async -> RefineOutcome {
+    guard let refiner else { return .fallback(raw, .noRefiner) }
+    switch await requestLLMText(timeout: timeout, { try await refiner.refine(raw) }) {
+    case .text(let text): return .refined(text)
+    case .failed(let reason): return .fallback(raw, reason)
     }
 }

@@ -133,3 +133,46 @@ private struct WhitespaceOnlyRefiner: TextRefiner {
 @Test func failedReasonLabelIgnoresDetail() {
     #expect(FallbackReason.failed(detail: "HTTP 500").label == "다듬기 서버 오류")
 }
+
+// 오디오를 한 요청으로 다듬는 경로는 텍스트 다듬기와 같은 타임아웃·오류 정책을 쓴다. 다만
+// 원본이 없으므로 결과는 텍스트이거나 이유뿐이다.
+@Test func llmTextRequestReturnsTrimmedText() async {
+    let out = await requestLLMText(timeout: .seconds(5)) { "  전사 결과 \n" }
+    #expect(out == .text("전사 결과"))
+}
+
+@Test func llmTextRequestTimesOut() async {
+    let clock = ContinuousClock()
+    var out: LLMTextResult?
+    let elapsed = await clock.measure {
+        out = await requestLLMText(timeout: .milliseconds(200)) {
+            try await Task.sleep(for: .seconds(10))
+            return "늦게 온 결과"
+        }
+    }
+    #expect(out == .failed(.timeout))
+    // 10초짜리 요청이 취소되어 드레인되지 않는다.
+    #expect(elapsed < .seconds(2))
+}
+
+@Test func llmTextRequestMapsErrorsToReasons() async {
+    let refused = await requestLLMText(timeout: .seconds(5)) { throw URLError(.cannotConnectToHost) }
+    #expect(refused == .failed(.failed(detail: "연결 거부 — 로컬 LLM 서버가 실행 중이 아님")))
+
+    // 텍스트 전용 모델에 오디오를 보내면 서버가 400을 돌려준다. 그 코드가 원인으로 남아야
+    // 로그에서 "서버가 오디오를 받지 않음"을 가려낼 수 있다.
+    let rejected = await requestLLMText(timeout: .seconds(5)) { throw RefinerError.badStatus(400) }
+    #expect(rejected == .failed(.failed(detail: "HTTP 400")))
+
+    let truncated = await requestLLMText(timeout: .seconds(5)) { throw RefinerError.truncated }
+    #expect(truncated == .failed(.truncated))
+
+    let empty = await requestLLMText(timeout: .seconds(5)) { "  \n " }
+    #expect(empty == .failed(.emptyResult))
+}
+
+@Test func audioRefineTimeoutAddsTheWholeRecordingLength() {
+    // 오디오 경로는 시간 초과 시 넣을 원본이 없으므로 텍스트 다듬기(40%)보다 넉넉히 기다린다.
+    #expect(audioRefineTimeout(for: .seconds(5), base: .seconds(4)) == .seconds(9))
+    #expect(audioRefineTimeout(for: .seconds(30), base: .seconds(10)) == .seconds(40))
+}

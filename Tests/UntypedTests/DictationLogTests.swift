@@ -92,3 +92,29 @@ private func temporaryLogURL() -> URL {
     let rotated = url.appendingPathExtension("1")
     #expect(try String(contentsOf: rotated, encoding: .utf8) == "0123456789")
 }
+
+@Test func entryWithoutRawMarksAudioPathAndOmitsSTTLine() {
+    // 오디오를 한 요청으로 다듬으면 원문이 없다. 빈 STT 줄 대신 헤더에 경로를 남긴다.
+    let entry = DictationLog.entry(
+        raw: nil, outcome: .refined("오늘 저녁에."),
+        recorded: .milliseconds(7_240), at: fixedDate, timeZone: seoul
+    )
+    #expect(entry == """
+    [2026-09-11 22:10:33] 녹음 7.2초 · 오디오에서 바로 다듬음
+    결과: 오늘 저녁에.
+
+    """)
+}
+
+@Test func failureEntryHasHeaderAndCauseButNoTextLines() {
+    // 오디오 다듬기가 실패하면 원문도 결과도 없다. 헤더와 원인만 남기고 빈 STT 줄을 만들지 않는다.
+    let entry = DictationLog.failureEntry(
+        label: "다듬기 서버 오류", recorded: .milliseconds(7_240), at: fixedDate, timeZone: seoul,
+        cause: "HTTP 400"
+    )
+    #expect(entry == "[2026-09-11 22:10:33] 녹음 7.2초 · 삽입 안 함 (다듬기 서버 오류)\n원인: HTTP 400\n")
+    let noCause = DictationLog.failureEntry(
+        label: "다듬기 결과 없음", recorded: .seconds(3), at: fixedDate, timeZone: seoul
+    )
+    #expect(noCause == "[2026-09-11 22:10:33] 녹음 3.0초 · 삽입 안 함 (다듬기 결과 없음)\n")
+}

@@ -112,6 +112,7 @@ Menu → **설정…** (Settings). Changes apply on **저장** (Save) without re
 | 앱으로 보내기 단축키 | `target_app_hotkey` | *(absent = off)* | second standalone modifier; must differ from `hotkey` |
 | 대상 앱 | `target_app_bundle_id` | *(absent)* | bundle ID of the app to send to, chosen with a file picker in Settings |
 | 앱으로 보내기 · 넣은 뒤 Return 누르기 | `target_app_press_return` | `false` | press Return after inserting into the target app |
+| 전사 방식 | `transcription_backend` | `apple` | `apple` = two steps: on-device `SpeechAnalyzer` → LLM refines the text. `llm_audio` = one step, no Apple STT: the recording (16 kHz mono WAV, `input_audio` content part) is appended after the same system prompt + few-shot pairs and the model — which must accept audio, e.g. `gemma-4-e2b-it` — returns the refined sentence directly. There is no raw transcript to fall back to: on failure (server down, model rejects audio, timeout = *다듬기 대기 시간* + recording length, truncated/empty) nothing is inserted and the notice/log say why |
 | 받아쓰기 기록 | `log_enabled` | `true` | see [Logs](#logs) |
 | 로그인할 때 자동으로 시작 | *(not in the file)* | off | macOS login item (`SMAppService`); the system owns the state, so it also appears under System Settings › General › Login Items |
 
@@ -171,9 +172,11 @@ Sources/Untyped/
               AudioLevel.swift         RMS
               SystemAudioMuter.swift   mutes other apps' output while recording
   Transcribe/ Transcriber.swift        SpeechAnalyzer → String
-  Refine/     TextRefiner.swift        protocol, fallback policy, timeout
-              OpenAICompatibleRefiner.swift
-              RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs
+              AudioRecorder.swift      PCM buffers → WAV bytes (for `llm_audio`)
+  Refine/     TextRefiner.swift        protocols, fallback policy, timeouts
+              OpenAICompatibleRefiner.swift   refine text, or refine audio in one request, on the same server
+              RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs; text or audio as the final turn
+              MultipartChatMessage.swift  chat message whose content is a string or `input_audio`/`text` parts
   Output/     TextInserter.swift       clipboard backup → ⌘V → restore
               TargetApp.swift          activate the configured app → TextInserter → return to the previous app
 ```
