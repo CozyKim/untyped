@@ -149,6 +149,9 @@ final class Coordinator {
     }
 
     private func beginCapture() async {
+        // 음소거 대상 고르기는 프로세스마다 coreaudiod에 물어 40ms 넘게 걸린다. 마이크 준비와
+        // 겹쳐 돌려 음소거가 걸리는 시점을 늦추지 않는다.
+        async let renderers = muter.tapRenderers()
         do {
             let format = try await Transcriber.targetAudioFormat()
             let newTranscriber = Transcriber()
@@ -168,7 +171,7 @@ final class Coordinator {
             // 그때 걸면 finishAndInsert()가 곧 풀긴 해도 뗀 뒤 200~500ms 동안 소리가 끊겼다
             // 돌아오는 게 들리고, 녹음은 끝났으니 막을 되울림도 없다.
             if state.isListening {
-                await muter.mute()
+                await muter.mute(renderers: await renderers)
             }
         } catch {
             NSLog("[Coordinator] 녹음 시작 실패: %@", String(describing: error))
