@@ -35,6 +35,9 @@ final class Coordinator {
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
     /// "아직 안 끝남"을 보고 오판하지 않도록 이 핸들을 먼저 기다리게 한다.
     private var captureSetup: Task<Void, Never>?
+    /// 녹음 세션 번호. 미리보기 콜백이 자기 번호를 들고 있어, 다음 녹음이 시작된 뒤 도착한 이전 녹음의
+    /// 중간 결과를 걸러 낸다.
+    private var captureSession = 0
     /// 이번 녹음의 예열 요청 시각. 다듬기가 시간 초과됐을 때 콜드 스타트(모델 로드) 때문이었는지
     /// 로그에 적기 위해 시작과 완료를 기억한다.
     private var warmUpStartedAt: ContinuousClock.Instant?
@@ -168,6 +171,7 @@ final class Coordinator {
                 self.warmUpSkipped = !needsWarmUp
                 self.warmUpFinishedAt = .now
             }
+            captureSession += 1
             captureSetup = Task { await beginCapture() }
         case .stopCaptureAndProcess(let destination):
             overlay.show(status: .refining)
@@ -183,6 +187,7 @@ final class Coordinator {
     }
 
     private func beginCapture() async {
+        let session = captureSession
         // 음소거 대상 고르기는 프로세스마다 coreaudiod에 물어 40ms 넘게 걸린다. 마이크 준비와
         // 겹쳐 돌려 음소거가 걸리는 시점을 늦추지 않는다.
         async let renderers = muter.tapRenderers()
@@ -205,7 +210,10 @@ final class Coordinator {
             switch backend {
             case .apple:
                 let newTranscriber = Transcriber()
-                try await newTranscriber.begin(inputSequence: stream)
+                // 미리보기는 이 경로에만 있다 — 1단계(LLM 오디오)는 Apple STT를 쓰지 않아 중간 결과가 없다.
+                try await newTranscriber.begin(inputSequence: stream) { [weak self] text in
+                    Task { @MainActor in self?.showPreview(text, from: session) }
+                }
                 transcriber = newTranscriber
             case .llmAudio:
                 let newRecorder = AudioRecorder()
@@ -225,6 +233,13 @@ final class Coordinator {
             NSLog("[Coordinator] 녹음 시작 실패: %@", String(describing: error))
             reset()
         }
+    }
+
+    /// 미리보기 분석기가 보낸 잠정 전사. 지금 녹음의 것이고 아직 듣는 중일 때만 오버레이에 올린다.
+    /// 삽입·로그와는 무관하다 — 그쪽은 finish()가 돌려주는 확정 전사만 쓴다.
+    private func showPreview(_ text: String, from session: Int) {
+        guard acceptsPreview(from: session, current: captureSession, state: state) else { return }
+        overlay.update(preview: text)
     }
 
     private func finishAndInsert(destination: InsertDestination) async {

@@ -7,11 +7,34 @@ enum OverlayStatus: Equatable, Sendable {
     /// 삽입이 끝난 뒤 잠깐 보여주는 안내. 문구는 호출자가 정한다.
     case notice(String)
 
+    /// pill의 높이. 미리보기가 없을 때는 모든 상태에서 같다.
+    static let pillHeight: CGFloat = 52
+
     /// 안내 문구는 파형·스피너보다 넓은 자리가 필요하다.
     var width: CGFloat {
         if case .notice = self { return 320 }
         return 160
     }
+
+    /// 패널 크기. 듣는 중에는 파형 아래 미리보기가 들어갈 자리를 미리 잡는다 — 텍스트가 올 때마다
+    /// 패널을 다시 재지 않고 pill만 안에서 늘어난다. 내용은 위 정렬이라 남는 자리는 투명하다.
+    var panelSize: CGSize {
+        switch self {
+        case .listening: CGSize(width: PreviewLayout.width, height: Self.pillHeight + PreviewLayout.height)
+        case .refining, .notice: CGSize(width: width, height: Self.pillHeight)
+        }
+    }
+}
+
+/// 파형 아래 미리보기 텍스트 자리. 마지막 두 줄만 보인다.
+private enum PreviewLayout {
+    static let width: CGFloat = 360
+    static let fontSize: CGFloat = 13
+    /// 13pt 시스템 글꼴 한 줄. ImageRenderer로 실측한 값이다.
+    static let lineHeight: CGFloat = 16
+    static let textHeight: CGFloat = lineHeight * 2
+    static let bottomPadding: CGFloat = 10
+    static let height: CGFloat = textHeight + bottomPadding
 }
 
 /// 키 윈도우가 되면 원래 앱의 텍스트 포커스가 풀려 ⌘V 삽입이 엉뚱한 곳으로 간다.
@@ -29,9 +52,10 @@ final class OverlayController {
     func show(status: OverlayStatus) {
         model.status = status
         model.level = 0
+        model.preview = ""
         model.isVisible = true
         if panel == nil { panel = makePanel() }
-        panel?.setContentSize(NSSize(width: status.width, height: 52))
+        panel?.setContentSize(status.panelSize)
         guard positionAtBottomCenter() else { return }
         panel?.orderFrontRegardless()
     }
@@ -52,8 +76,14 @@ final class OverlayController {
         model.level = meterLevel(level)
     }
 
+    /// 듣는 동안 파형 아래에 보여줄 잠정 전사. 상태가 바뀌면(show·hide) 비워진다.
+    func update(preview: String) {
+        model.preview = preview
+    }
+
     func hide() {
         model.level = 0
+        model.preview = ""
         model.isVisible = false
         panel?.orderOut(nil)
     }
@@ -90,7 +120,10 @@ final class OverlayController {
         let frame = screen.visibleFrame
         let panelWidth = panel.frame.width
         let xOffset = frame.midX - panelWidth / 2
-        panel.setFrameOrigin(NSPoint(x: xOffset, y: frame.minY + 120))
+        // pill 윗변을 상태와 무관하게 같은 높이에 둔다. 듣는 중 패널은 미리보기 자리만큼 더 높고
+        // 내용은 위 정렬이라, 원점을 그만큼 내려야 파형이 스피너와 같은 자리에 온다.
+        let top = frame.minY + 120 + OverlayStatus.pillHeight
+        panel.setFrameOrigin(NSPoint(x: xOffset, y: top - panel.frame.height))
         return true
     }
 }
@@ -100,6 +133,8 @@ final class OverlayController {
 private final class OverlayModel {
     var status: OverlayStatus = .listening
     var level: Float = 0
+    /// 듣는 중 파형 아래에 보여줄 잠정 전사. 비어 있으면 자리도 없다.
+    var preview = ""
     /// 패널을 orderOut 해도 SwiftUI 뷰는 살아 있다. 숨긴 동안 TimelineView가
     /// 보이지 않는 파형을 60fps로 그리지 않도록 이 값으로 스케줄을 멈춘다.
     var isVisible = false
@@ -111,37 +146,62 @@ private struct OverlayView: View {
     var body: some View {
         TimelineView(.animation(paused: !model.isVisible)) { context in
             let seconds = context.date.timeIntervalSinceReferenceDate
-            switch model.status {
-            case .listening:
-                ZStack {
-                    ForEach(WaveLayer.all, id: \.cycles) { layer in
-                        // 조용할 때도 살짝 흔들려야 "듣고 있음"이 보인다.
-                        WaveShape(
-                            amplitude: CGFloat(max(0.1, waveAmplitude(level: model.level))) * layer.scale,
-                            cycles: layer.cycles,
-                            phase: CGFloat(seconds.truncatingRemainder(dividingBy: layer.period) / layer.period * 2 * .pi)
-                        )
-                        .fill(layer.color)
-                    }
+            VStack(spacing: 0) {
+                statusContent(seconds: seconds)
+                    .frame(width: model.status.width, height: OverlayStatus.pillHeight)
+                if !model.preview.isEmpty {
+                    Text(model.preview)
+                        .font(.system(size: PreviewLayout.fontSize))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        // 아래 정렬 + 클립으로 마지막 두 줄만 남긴다. truncationMode(.head)는 첫 줄을
+                        // 남기고 마지막 줄 머리만 잘라 쓸 수 없다. 뒤의 fixedSize가 없으면 한 줄일 때도
+                        // 두 줄 높이를 차지한다.
+                        .frame(maxHeight: PreviewLayout.textHeight, alignment: .bottom)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .clipped()
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, PreviewLayout.bottomPadding)
+                        .frame(width: PreviewLayout.width)
                 }
-                .frame(width: 132, height: 38)
-                // 버퍼 주기로 값이 들어오므로 별도 스무딩 코드 없이 여기서 떨림을 흡수한다.
-                .animation(.linear(duration: 0.1), value: model.level)
-            case .refining:
-                Circle()
-                    .trim(from: 0, to: 0.75)
-                    .stroke(WaveLayer.all[1].color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .frame(width: 22, height: 22)
-                    .rotationEffect(.degrees(seconds.truncatingRemainder(dividingBy: 1) * 360))
-            case .notice(let text):
-                Text(text)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .padding(.horizontal, 16)
             }
+            // pill 높이에서는 Capsule과 같은 모양이고, 미리보기로 길어져도 모서리는 그대로다.
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: OverlayStatus.pillHeight / 2))
+            .animation(.easeOut(duration: 0.15), value: model.preview.isEmpty)
         }
-        .frame(width: model.status.width, height: 52)
-        .background(.ultraThinMaterial, in: Capsule())
+        .frame(width: model.status.panelSize.width, height: model.status.panelSize.height, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func statusContent(seconds: TimeInterval) -> some View {
+        switch model.status {
+        case .listening:
+            ZStack {
+                ForEach(WaveLayer.all, id: \.cycles) { layer in
+                    // 조용할 때도 살짝 흔들려야 "듣고 있음"이 보인다.
+                    WaveShape(
+                        amplitude: CGFloat(max(0.1, waveAmplitude(level: model.level))) * layer.scale,
+                        cycles: layer.cycles,
+                        phase: CGFloat(seconds.truncatingRemainder(dividingBy: layer.period) / layer.period * 2 * .pi)
+                    )
+                    .fill(layer.color)
+                }
+            }
+            .frame(width: 132, height: 38)
+            // 버퍼 주기로 값이 들어오므로 별도 스무딩 코드 없이 여기서 떨림을 흡수한다.
+            .animation(.linear(duration: 0.1), value: model.level)
+        case .refining:
+            Circle()
+                .trim(from: 0, to: 0.75)
+                .stroke(WaveLayer.all[1].color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .frame(width: 22, height: 22)
+                .rotationEffect(.degrees(seconds.truncatingRemainder(dividingBy: 1) * 360))
+        case .notice(let text):
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .padding(.horizontal, 16)
+        }
     }
 }
 

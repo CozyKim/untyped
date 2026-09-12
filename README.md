@@ -87,7 +87,7 @@ The menu-bar mic icon shows state: idle, listening, refining.
 | **Tap** (< 250 ms) | Starts toggle recording; tap again to stop (can be disabled) |
 | **Send-to-app key** (optional second key) | Same hold/tap, but the result goes into a configured app: switch to it → paste → switch back. Shows a notice and does not start recording if that app is not running |
 
-A floating waveform appears at the bottom of the screen while listening and turns into a spinner while refining. If the raw transcript was inserted instead of a refined one, a notice explains why for 2.5 s — e.g. *다듬기 시간 초과 — 원본 삽입* (refinement timed out — raw inserted).
+A floating waveform appears at the bottom of the screen while listening and turns into a spinner while refining. With the two-step (Apple) backend, the words recognised so far appear under the waveform as you speak (last two lines) — a fast, tentative transcript that can differ from the final one; it disappears when you release the key and is never inserted or logged. The one-step (LLM audio) backend has no interim transcript, so nothing is shown there. If the raw transcript was inserted instead of a refined one, a notice explains why for 2.5 s — e.g. *다듬기 시간 초과 — 원본 삽입* (refinement timed out — raw inserted).
 
 ## Configuration
 

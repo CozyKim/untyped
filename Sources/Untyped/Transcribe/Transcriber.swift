@@ -12,6 +12,14 @@ actor Transcriber {
     /// 입력을 분석기로 그대로 흘려보내며 개수만 센다.
     private var forwarder: Task<Void, Never>?
     private var forwardedInputs = 0
+    /// 미리보기용 두 번째 분석기. 확정용과 같은 입력을 받되 작은 문맥 창(fastResults)으로 말한 지
+    /// 1초 안에 잠정 결과를 낸다. 확정 텍스트는 절대 여기서 가져오지 않는다 — 빠른 모드는 정확도가
+    /// 떨어진다. 확정용 모듈에 잠정 결과만 켜는 것으로는 안 된다 — 그 모듈은 12~20초 창 단위로만
+    /// 결과를 내서 짧은 받아쓰기에서는 키를 쥔 동안 아무것도 오지 않고, 한 분석기에 두 모듈을 붙이면
+    /// 빠른 쪽도 느린 쪽에 묶인다. 키를 떼면 마무리하지 않고 바로 버린다.
+    private var previewAnalyzer: SpeechAnalyzer?
+    private var previewCollector: Task<Void, Never>?
+    private var previewContinuation: AsyncStream<AnalyzerInput>.Continuation?
 
     init(locale: Locale = Locale(identifier: "ko-KR")) {
         self.locale = locale
@@ -26,19 +34,32 @@ actor Transcriber {
         return format
     }
 
-    func begin(inputSequence: AsyncStream<AnalyzerInput>) async throws {
+    /// `onPreview`를 주면 듣는 동안 잠정 전사(확정 + 잠정)를 갱신될 때마다 보낸다. 어느 스레드에서
+    /// 불릴지 정해져 있지 않으므로 받는 쪽이 자기 격리로 옮긴다. `finish()`가 시작되면 더 오지 않는다.
+    func begin(
+        inputSequence: AsyncStream<AnalyzerInput>,
+        onPreview: (@Sendable (String) -> Void)? = nil
+    ) async throws {
         // 이전 세션이 진행 중이면 정리한다. 새 세션 시작 시 이전 상태를 명시적으로 취소한다.
         // 핸들을 버리는 것만으로는 Task와 Analyzer가 취소되지 않으므로 명시적으로 정리해야 한다.
         if let previousAnalyzer = analyzer {
             await teardown(for: previousAnalyzer)
         }
 
-        // MVP에 실시간 미리보기가 없으므로 volatileResults가 필요 없다.
-        // 미리보기를 넣을 때 .progressiveTranscription 계열로 교체한다.
+        // 확정용은 잠정 결과 없이 둔다. 미리보기는 아래 별도 분석기가 맡는다.
         let module = SpeechTranscriber(locale: locale, preset: .transcription)
         let engine = SpeechAnalyzer(modules: [module])
         transcriber = module
         analyzer = engine
+
+        // 미리보기 입력. 확정용과 같은 버퍼를 한 번 더 흘린다.
+        var previewStream: AsyncStream<AnalyzerInput>?
+        if onPreview != nil {
+            let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+            previewStream = stream
+            previewContinuation = continuation
+        }
+        let previewContinuation = self.previewContinuation
 
         // 분석기가 버퍼를 하나도 받지 못한 채 입력이 닫히면 module.results가 끝나지
         // 않는다. 그 상태에서 finish()가 결과를 기다리면 영영 돌아오지 않으므로
@@ -48,9 +69,11 @@ actor Transcriber {
         forwarder = Task { [weak self] in
             for await input in inputSequence {
                 continuation.yield(input)
+                previewContinuation?.yield(input)
                 await self?.noteForwardedInput()
             }
             continuation.finish()
+            previewContinuation?.finish()
         }
 
         collector = Task {
@@ -66,14 +89,62 @@ actor Transcriber {
             await teardown(for: engine)
             throw error
         }
+        if let onPreview, let previewStream {
+            await startPreview(inputSequence: previewStream, onPreview: onPreview)
+        }
     }
 
     private func noteForwardedInput() {
         forwardedInputs += 1
     }
 
+    /// 미리보기 분석기를 띄운다. 실패해도 받아쓰기는 계속된다 — 미리보기는 없어도 되는 부가 기능이다.
+    private func startPreview(
+        inputSequence: AsyncStream<AnalyzerInput>, onPreview: @escaping @Sendable (String) -> Void
+    ) async {
+        let module = SpeechTranscriber(
+            locale: locale, transcriptionOptions: [],
+            reportingOptions: [.volatileResults, .fastResults], attributeOptions: []
+        )
+        let engine = SpeechAnalyzer(modules: [module])
+        previewAnalyzer = engine
+        previewCollector = Task {
+            var transcript = InterimTranscript()
+            do {
+                for try await result in module.results {
+                    transcript.add(String(result.text.characters), isFinal: result.isFinal)
+                    // 취소된 뒤 도착한 결과는 보내지 않는다.
+                    guard !Task.isCancelled else { return }
+                    onPreview(transcript.text)
+                }
+            } catch {
+                // 취소·오류로 결과가 끊기면 미리보기만 멈춘다. 확정 경로와는 별개다.
+            }
+        }
+        do {
+            try await engine.start(inputSequence: inputSequence)
+        } catch {
+            NSLog("[Transcriber] 미리보기 시작 실패: %@", String(describing: error))
+            await stopPreview()
+        }
+    }
+
+    /// 미리보기 분석기를 즉시 버린다. 마무리하지 않는다 — 키를 뗀 뒤의 잠정 결과는 쓸 데가 없고,
+    /// 확정 finalize와 겹쳐 돌면 그만큼 삽입이 늦어진다. 없으면 아무것도 하지 않는다.
+    private func stopPreview() async {
+        previewCollector?.cancel()
+        previewContinuation?.finish()
+        let engine = previewAnalyzer
+        previewCollector = nil
+        previewContinuation = nil
+        previewAnalyzer = nil
+        await engine?.cancelAndFinishNow()
+    }
+
     /// 입력 스트림이 닫힌 뒤 호출한다. 남은 결과를 마무리하고 전체 텍스트를 돌려준다.
     func finish() async throws -> String {
+        // 키를 뗐다. 미리보기는 여기서 끝이다 — 확정 finalize보다 먼저 버린다.
+        await stopPreview()
         guard let analyzer, let collector else { return "" }
 
         // 스트림은 이미 닫혔으므로 전달이 끝나기를 잠깐 기다리면 개수가 확정된다.
@@ -112,6 +183,7 @@ actor Transcriber {
         self.collector = nil
         self.forwarder = nil
 
+        await stopPreview()
         // Analyzer는 자신의 분석 작업으로 인해 자기 자신을 retain하고 있다.
         // 분석을 시작했으면 드롭만으로는 deallocate되지 않으므로 명시적으로 정리해야 한다.
         await session.cancelAndFinishNow()
