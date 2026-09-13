@@ -286,4 +286,124 @@ struct TextInserterTests {
         #expect(diagnostics == ["게시 전 중단 · 대상 앱이 실행 중이 아님"])
     }
 
+    @Test("게시 뒤 일시적인 입력 요소 조회 실패는 50회 모두 복구한다")
+    func transientFocusReadFailure50Cycles() async {
+        for _ in 0..<50 {
+            let board = makePasteboard()
+            defer { board.releaseGlobally() }
+            var posted = false
+            var failures = 0
+            var submits = 0
+            let result = await TextInserter.insert(
+                "완성 문장", into: board, timeout: .milliseconds(200), hasFocus: {
+                    if posted, failures < 2 { failures += 1; return nil }
+                    return true
+                }, targetValue: { posted ? "완성 문장" : "" },
+                paste: { posted = true; return true }, submit: { submits += 1; return true }
+            )
+            #expect(result == .inserted)
+            #expect(submits == 1)
+            #expect(board.string(forType: .string) == "원본")
+        }
+    }
+
+    @Test("수신 확인 직후 조회 실패도 Return 전에 복구를 기다린다")
+    func transientFocusFailureBeforeSubmit() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var posted = false
+        var observed = false
+        var failedOnce = false
+        var submits = 0
+        let result = await TextInserter.insert(
+            "완성 문장", into: board, timeout: .milliseconds(200), hasFocus: {
+                if observed, !failedOnce { failedOnce = true; return nil }
+                return true
+            }, targetValue: {
+                if posted { observed = true; return "완성 문장" }
+                return ""
+            }, paste: { posted = true; return true }, submit: { submits += 1; return true }
+        )
+        #expect(result == .inserted)
+        #expect(submits == 1)
+    }
+
+    @Test("조회 불가가 계속되면 전송·복원하지 않고 이유를 기록한다")
+    func permanentUnknownFocusRemainsUnconfirmed() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var posted = false
+        var diagnostics: [String] = []
+        var submits = 0
+        let result = await TextInserter.insert(
+            "문장", into: board, timeout: .milliseconds(30), hasFocus: { posted ? nil : true },
+            targetValue: { posted ? "문장" : "" }, onDiagnostic: { diagnostics.append($0) },
+            paste: { posted = true; return true }, submit: { submits += 1; return true }
+        )
+        #expect(result == .unconfirmed)
+        #expect(submits == 0)
+        #expect(board.string(forType: .string) == "문장")
+        #expect(diagnostics.first?.contains("포커스 조회 불가") == true)
+    }
+
+    @Test("조회 불가 뒤 실제 포커스 변경이 확인되면 즉시 중단한다")
+    func explicitFocusChangeAfterUnknownStopsPaste() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var posted = false
+        var reads = 0
+        let result = await TextInserter.insert(
+            "문장", into: board, timeout: .milliseconds(100), hasFocus: {
+                guard posted else { return true }
+                reads += 1
+                if reads == 1 { return nil }
+                return false
+            }, targetValue: { posted ? "문장" : "" }, paste: { posted = true; return true }
+        )
+        #expect(result == .unconfirmed)
+        #expect(reads == 2)
+        #expect(board.string(forType: .string) == "문장")
+    }
+
+    @Test("게시 전 포커스 조회가 늦어도 확인 후에만 게시한다")
+    func initialUnknownFocusWaitsBeforePosting() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var reads = 0
+        var posted = false
+        let result = await TextInserter.insert(
+            "문장", into: board, timeout: .milliseconds(100), hasFocus: {
+                reads += 1
+                return reads <= 2 ? nil : true
+            }, targetValue: { posted ? "문장" : "" }, paste: {
+                #expect(reads >= 3)
+                posted = true
+                return true
+            }
+        )
+        #expect(result == .inserted)
+        #expect(board.string(forType: .string) == "원본")
+    }
+
+    @Test("게시 전 대기 중 나타난 문장을 붙여넣기 성공으로 오인하지 않는다")
+    func baselineRefreshAfterPrePasteFocusWait() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var value = ""
+        var interrupted = false
+        var submits = 0
+        let result = await TextInserter.insert(
+            "문장", into: board, timeout: .milliseconds(50), hasFocus: {
+                if board.string(forType: .string) == "문장", !interrupted {
+                    interrupted = true
+                    value = "문장"
+                    return nil
+                }
+                return true
+            }, targetValue: { value }, paste: { true }, submit: { submits += 1; return true }
+        )
+        #expect(result == .unconfirmed)
+        #expect(submits == 0)
+    }
+
 }

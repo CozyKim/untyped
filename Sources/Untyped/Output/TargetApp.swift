@@ -66,7 +66,7 @@ enum TargetApp {
                 if origin != target { _ = target.activate(options: []) }
                 return await waitUntilKeyboardFocus(target)
             },
-            hasFocus: { hasKeyboardFocus(target) },
+            hasFocus: { keyboardFocusState(pid: target.processIdentifier) },
             onDiagnostic: onDiagnostic
         )
         // Return의 게시와 소비도 별개다. 기존 복귀 여유는 유지하되, 붙여넣기 수신을
@@ -115,14 +115,20 @@ enum TargetApp {
 
     /// 시스템 전체 AX 조회가 CannotComplete로 실패해도 앱별 AXFocused 증거는 유효할 수 있다.
     static func hasKeyboardFocus(pid: pid_t) -> Bool {
+        keyboardFocusState(pid: pid) == true
+    }
+
+    /// nil은 AX 조회 실패다. false(실제 포커스 불일치)와 구분해 재확인할 수 있게 한다.
+    static func keyboardFocusState(pid: pid_t) -> Bool? {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard frontmostPID == pid else { return false }
         let systemPID = focusedApplicationPID()
         // 다른 앱이라는 명시적인 증거는 폴백으로 무시하지 않는다.
         if let systemPID { return systemPID == pid }
+        guard let focused = applicationElementIsFocused(pid: pid) else { return nil }
         return keyboardFocusMatches(
             frontmostPID: frontmostPID, targetPID: pid, focusedApplicationPID: nil,
-            elementIsFocused: applicationElementIsFocused(pid: pid)
+            elementIsFocused: focused
         )
     }
 

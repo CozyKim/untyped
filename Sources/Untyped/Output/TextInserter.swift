@@ -29,7 +29,7 @@ enum TextInserter {
     static func insert(
         _ text: String, pressReturn: Bool = false,
         prepare: () async -> Bool = { true },
-        hasFocus: (() -> Bool)? = nil,
+        hasFocus: (() -> Bool?)? = nil,
         onDiagnostic: (String) -> Void = { _ in }
     ) async -> Result {
         guard hasAccessibilityPermission else {
@@ -49,23 +49,31 @@ enum TextInserter {
             },
             hasFocus: {
                 guard let recipient else { return false }
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == recipient else {
+                    focusFailure = "앞 앱 변경"
+                    return false
+                }
                 if let focused {
                     guard let current = focusedElement() else {
                         focusFailure = "현재 입력 요소 조회 실패"
-                        return false
+                        return nil
                     }
                     guard CFEqual(focused, current) else {
                         focusFailure = "입력 요소 변경"
                         return false
                     }
                 }
-                guard TargetApp.hasKeyboardFocus(pid: recipient) else {
-                    focusFailure = "대상 앱의 키보드 포커스 확인 실패"
-                    return false
+                let state = TargetApp.keyboardFocusState(pid: recipient)
+                guard state == true else {
+                    focusFailure = state == nil ? "키보드 포커스 조회 실패" : "키보드 포커스 변경"
+                    return state
                 }
-                guard hasFocus?() ?? true else {
-                    focusFailure = "대상 앱 포커스 조건 불일치"
-                    return false
+                if let hasFocus {
+                    let additional = hasFocus()
+                    guard additional == true else {
+                        focusFailure = additional == nil ? "대상 앱 포커스 조회 실패" : "대상 앱 포커스 조건 불일치"
+                        return additional
+                    }
                 }
                 focusFailure = nil
                 return true
@@ -91,7 +99,7 @@ enum TextInserter {
         _ text: String, into pasteboard: NSPasteboard,
         timeout: Duration = pasteSettleTimeout,
         prepare: () async -> Bool = { true },
-        hasFocus: () -> Bool = { true },
+        hasFocus: () -> Bool? = { true },
         targetValue: () -> String? = { nil },
         onDiagnostic: (String) -> Void = { _ in },
         paste: () -> Bool,
@@ -113,6 +121,16 @@ enum TextInserter {
             onDiagnostic((detail ?? summary) + (posted ? " · ⌘V 게시 후" : " · ⌘V 게시 전"))
             return result
         }
+        // nil일 때만 기다린다. false(다른 앱/요소)는 즉시 거부하며 추측해서 게시하지 않는다.
+        func waitForFocus(until deadline: ContinuousClock.Instant) async -> Bool? {
+            while !Task.isCancelled {
+                if let state = hasFocus() { return state }
+                guard ContinuousClock.now < deadline else { return nil }
+                do { try await Task.sleep(for: .milliseconds(10)) }
+                catch { return nil }
+            }
+            return nil
+        }
         guard !text.isEmpty else { return report(.notReady) }
         // MainActor는 await 사이의 재진입을 막지 않는다. 대기자가 잠금을 얻은 뒤에만 활성화한다.
         while busy {
@@ -122,19 +140,13 @@ enum TextInserter {
         guard !Task.isCancelled else { return report(.cancelled) }
         busy = true
         defer { busy = false }
-        guard await prepare(), hasFocus() else { return report(.notReady) }
-        guard !Task.isCancelled else { return report(.cancelled) }
-        // 앱 활성화 완료와 AXValue 준비 완료는 다르다. 한 번의 nil을 기준값으로 고정하면
-        // 붙여넣은 전체 텍스트가 나중에 보여도 received가 영원히 false가 된다.
-        // 재조회는 반드시 게시 전에 한다. 게시 후 값을 기준값으로 쓰면 수신 증거를 잃는다.
-        let baselineDeadline = ContinuousClock.now + min(timeout, .milliseconds(300))
-        var before = targetValue()
-        while before == nil, ContinuousClock.now < baselineDeadline {
-            do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return report(.cancelled) }
-            guard hasFocus() else { return report(.notReady) }
-            before = targetValue()
+        guard await prepare() else { return report(.notReady) }
+        let preparationDeadline = ContinuousClock.now + timeout
+        guard await waitForFocus(until: preparationDeadline) == true else {
+            return report(Task.isCancelled ? .cancelled : .notReady)
         }
+        guard !Task.isCancelled else { return report(.cancelled) }
+        var before: String?
 
         // 소유권을 넘기기 전에 모든 표현을 materialize한다. 읽지 못한 표현이 있으면 손실 없이 중단한다.
         let originalCount = pasteboard.changeCount
@@ -148,8 +160,11 @@ enum TextInserter {
             }
             savedItems.append(saved)
         }
+        guard await waitForFocus(until: preparationDeadline) == true else {
+            return report(Task.isCancelled ? .cancelled : .notReady)
+        }
+        // 재조회가 await를 거쳤으므로 스냅샷 이후 외부 복사가 없었는지 다시 검사한다.
         guard pasteboard.changeCount == originalCount else { return report(.clipboardChanged) }
-        guard hasFocus() else { return report(.notReady) }
 
         let ownedCount = pasteboard.clearContents()
         let wrote = pasteboard.setString(text, forType: .string)
@@ -161,9 +176,32 @@ enum TextInserter {
             return report(.writeFailed)
         }
         guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-        guard !Task.isCancelled, hasFocus() else {
-            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-            return report(Task.isCancelled ? .cancelled : .notReady)
+        // 마지막 대기 뒤의 값을 기준으로 삼는다. 앞서 읽은 값을 보관하면 대기 중 사용자가
+        // 입력한 문장을 이번 붙여넣기의 결과로 오인할 수 있다. 기준값 이후 await가 생기면 다시 읽는다.
+        let baselineDeadline = min(preparationDeadline, ContinuousClock.now + .milliseconds(300))
+        while true {
+            guard await waitForFocus(until: preparationDeadline) == true else {
+                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                return report(Task.isCancelled ? .cancelled : .notReady)
+            }
+            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+            before = targetValue()
+            let focus = hasFocus()
+            if focus == false {
+                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                return report(.notReady)
+            }
+            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+            if focus == true, before != nil || ContinuousClock.now >= baselineDeadline { break }
+            guard ContinuousClock.now < preparationDeadline else {
+                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                return report(.notReady)
+            }
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch {
+                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                return report(.cancelled)
+            }
         }
         guard paste() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
@@ -173,29 +211,35 @@ enum TextInserter {
         posted = true
         let deadline = ContinuousClock.now + timeout
         while true {
-            // 게시 뒤의 실패는 이미 소비했을 가능성이 있다. 복원·재전송·Return을 추측하지 않는다.
             guard !Task.isCancelled else { return report(.cancelled) }
-            guard hasFocus() else {
+            let focus = hasFocus()
+            if focus == false {
                 return report(.unconfirmed, detail: "포커스 변경으로 수신 미확인")
             }
             guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-            let after = targetValue()
-            if received(text, before: before, after: after) {
-                // 수신 관측 중의 동기 IPC에서도 외부 소유권·포커스가 바뀔 수 있다.
-                guard hasFocus(), pasteboard.changeCount == ownedCount else {
-                    return report(.unconfirmed, detail: "수신 관측 중 포커스 또는 클립보드 소유권 변경")
+            var focusUnavailable = focus == nil
+            let after = focus == true ? targetValue() : nil
+            if focus == true, received(text, before: before, after: after) {
+                let finalFocus = hasFocus()
+                if finalFocus == false {
+                    return report(.unconfirmed, detail: "수신 관측 중 포커스 변경")
                 }
-                if let submit, !submit() {
+                guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+                focusUnavailable = finalFocus == nil
+                if finalFocus == true {
+                    if let submit, !submit() {
+                        restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                        return report(.eventFailed)
+                    }
                     restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                    return report(.eventFailed)
+                    return report(.inserted)
                 }
-                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return report(.inserted)
             }
             guard ContinuousClock.now < deadline else {
                 let baseline = before == nil ? "읽기 불가" : "읽기 가능"
                 let current = after == nil ? "읽기 불가" : "읽기 가능"
-                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)")
+                let focusDetail = focusUnavailable ? " · 포커스 조회 불가" : ""
+                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)\(focusDetail)")
             }
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return report(.cancelled) }
