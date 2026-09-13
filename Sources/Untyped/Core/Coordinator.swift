@@ -304,7 +304,10 @@ final class Coordinator {
         var insertFailure: String?
         switch destination {
         case .frontmost:
-            await TextInserter.insert(outcome.text, pressReturn: pressReturn)
+            let result = await TextInserter.insert(outcome.text, pressReturn: pressReturn)
+            if result != .inserted {
+                insertFailure = "삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
+            }
         case .targetApp:
             // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
             let result: TargetApp.SendResult
@@ -313,7 +316,9 @@ final class Coordinator {
             } else {
                 result = .notRunning
             }
-            if result != .inserted {
+            if result == .unconfirmed {
+                insertFailure = "\(targetAppName) 삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
+            } else if result != .inserted {
                 insertFailure = "\(targetAppName) 앱에 넣을 수 없음 — 삽입 안 함"
             }
         }

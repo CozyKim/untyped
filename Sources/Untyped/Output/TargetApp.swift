@@ -12,17 +12,14 @@ enum TargetApp {
         /// 활성화를 요청했지만 시간 안에 키보드 포커스가 넘어오지 않았다. 이때 ⌘V를 보내면
         /// 원래 앱에 들어가므로 삽입하지 않는다.
         case notBroughtToFront
+        /// 이벤트는 보냈지만 수신 여부를 확인하지 못했다. 재전송하면 중복될 수 있다.
+        case unconfirmed
     }
 
     /// 활성화 요청 뒤 대상 앱이 실제로 키 입력을 받기까지 기다리는 상한. frontmost 표시는
     /// 0.2초 안에 바뀌지만 키보드 포커스는 0.2~0.8초 뒤에 넘어오는 것을 실측했다. 시스템이
     /// 바쁠 때를 위해 여유를 둔다.
     static let activationTimeout: Duration = .seconds(2)
-    /// 붙여넣기 이벤트를 보낸 뒤 원래 앱으로 돌아가기 전 여유. 이벤트는 보낸 순간 앞에
-    /// 있는 앱의 큐에 들어가지만, 대상 앱이 그것을 처리하기 전에 포커스를 빼앗지 않도록
-    /// 잠깐 기다린다.
-    static let returnDelay: Duration = .milliseconds(200)
-
     static func runningApplication(bundleID: String) -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
     }
@@ -51,24 +48,37 @@ enum TargetApp {
         // 손쉬운 사용 권한이 없으면 키보드 포커스 확인도 ⌘V도 할 수 없다. 앱을 앞으로 가져온 뒤
         // 상한까지 기다리다 포커스만 옮긴 채 실패하지 않도록 전환 전에 돌려보낸다.
         guard TextInserter.hasAccessibilityPermission else { return .notBroughtToFront }
-        // 돌아갈 앱은 녹음 시작 시점이 아니라 지금 읽는다. 토글 녹음 중에 사용자가 다른
-        // 앱으로 옮겨갔을 수 있고, 지금 있는 곳이 돌아갈 곳이다.
-        let origin = NSWorkspace.shared.frontmostApplication
-        if origin != target {
-            _ = target.activate(options: [])
-            guard await waitUntilKeyboardFocus(target) else {
-                // 삽입을 포기했으니 사용자가 있던 앱으로 돌려보낸다. 실패는 무시한다.
-                if let origin, !origin.isTerminated { _ = origin.activate(options: []) }
-                return .notBroughtToFront
-            }
+        var origin: NSRunningApplication?
+        let result = await TextInserter.insert(
+            text, pressReturn: pressReturn,
+            prepare: {
+                // 직렬화 대기 뒤 읽어야 다른 내보내기의 대상 앱을 복귀 대상으로 저장하지 않는다.
+                origin = NSWorkspace.shared.frontmostApplication
+                if origin != target { _ = target.activate(options: []) }
+                return await waitUntilKeyboardFocus(target)
+            },
+            hasFocus: { hasKeyboardFocus(target) }
+        )
+        // Return의 게시와 소비도 별개다. 기존 복귀 여유는 유지하되, 붙여넣기 수신을
+        // 판단하거나 클립보드를 복원하는 근거로 쓰지 않는다.
+        if result == .inserted, pressReturn {
+            do { try await Task.sleep(for: .milliseconds(200)) }
+            catch { return .inserted }
         }
-        await TextInserter.insert(text, pressReturn: pressReturn)
-        if let origin, origin != target, !origin.isTerminated {
-            try? await Task.sleep(for: returnDelay)
-            // 복귀 실패는 무시한다. 텍스트는 이미 들어갔다.
+        // 수신 확인 전에는 포커스를 빼앗지 않는다. 사용자가 다른 앱으로 옮겼어도 복귀를 강제하지 않는다.
+        if result == .inserted, hasKeyboardFocus(target),
+           let origin, origin != target, !origin.isTerminated {
             _ = origin.activate(options: [])
         }
-        return .inserted
+        if result == .notReady, NSWorkspace.shared.frontmostApplication == target,
+           let origin, origin != target, !origin.isTerminated {
+            _ = origin.activate(options: [])
+        }
+        switch result {
+        case .inserted: return .inserted
+        case .notReady: return .notBroughtToFront
+        default: return .unconfirmed
+        }
     }
 
     /// `NSWorkspace.frontmostApplication`은 LaunchServices가 앞 프로세스로 표시하는 순간 바뀌지만,
@@ -83,7 +93,8 @@ enum TargetApp {
             // NSRunningApplication의 시간에 따라 변하는 속성은 메인 런 루프가 한 번 돌아야
             // 갱신된다. sleep이 메인 액터를 놓아주어 그 한 턴이 생긴다.
             if hasKeyboardFocus(app) { return true }
-            try? await Task.sleep(for: .milliseconds(10))
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch { return false }
         }
         return hasKeyboardFocus(app)
     }
@@ -95,10 +106,12 @@ enum TargetApp {
 
     /// 접근성 시스템이 보고하는, 지금 키보드 포커스를 가진 앱의 pid. 손쉬운 사용 권한이 없거나
     /// 포커스를 가진 앱이 없으면 nil — 권한이 없으면 ⌘V도 보낼 수 없으므로 여기서 막히는 것이 맞다.
-    private static func focusedApplicationPID() -> pid_t? {
+    static func focusedApplicationPID() -> pid_t? {
         var value: CFTypeRef?
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.1)
         let result = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value
+            system, kAXFocusedApplicationAttribute as CFString, &value
         )
         guard result == .success, let value else { return nil }
         var pid: pid_t = 0
