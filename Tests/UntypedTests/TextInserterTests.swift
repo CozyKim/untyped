@@ -228,4 +228,62 @@ struct TextInserterTests {
         #expect(board.string(forType: .string) == "전체 문장")
     }
 
+    @Test("입력 진단이 받아쓰기 파일의 같은 항목에 기록된다", arguments: [true, false])
+    func insertionDiagnosticIsWrittenToDictationLog(confirmed: Bool) async throws {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var value = ""
+        var diagnostics: [String] = []
+        _ = await TextInserter.insert(
+            "완성 문장", into: board, timeout: .milliseconds(20), targetValue: { value },
+            onDiagnostic: { diagnostics.append($0) }, paste: {
+                if confirmed { value = "완성 문장" }
+                return true
+            }
+        )
+        #expect(diagnostics.count == 1)
+        let entry = DictationLog.entry(
+            raw: "원문", outcome: .refined("완성 문장"), recorded: .seconds(1),
+            at: Date(), insertion: diagnostics.first.map { "테스트 앱 · " + $0 }
+        )
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("insertion-\(UUID()).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try DictationLog.append(entry, to: url)
+        let saved = try String(contentsOf: url, encoding: .utf8)
+        #expect(saved.contains(confirmed ? "입력: 테스트 앱 · 수신 확인" : "입력: 테스트 앱 · 확인 시간 초과"))
+        #expect(saved.contains("STT : 원문\n결과: 완성 문장"))
+    }
+
+    @Test("게시 전 실패와 클립보드 변경도 진단을 전달한다", arguments: ["activation", "event", "clipboard", "focus"])
+    func earlyFailuresIncludeDiagnostic(scenario: String) async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var focused = true
+        var diagnostics: [String] = []
+        _ = await TextInserter.insert(
+            "본문", into: board, timeout: .milliseconds(10), prepare: { scenario != "activation" },
+            hasFocus: { focused }, onDiagnostic: { diagnostics.append($0) }, paste: {
+                if scenario == "clipboard" { board.clearContents() }
+                if scenario == "focus" { focused = false }
+                return scenario != "event"
+            }
+        )
+        let expected = ["activation": "게시 전 중단", "event": "키 이벤트 생성 실패",
+                        "clipboard": "클립보드 소유권 변경", "focus": "포커스 변경"]
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.contains(expected[scenario]!) == true)
+        #expect(diagnostics.first?.contains("본문") == false)
+    }
+
+    @Test("대상 앱 미실행도 파일 기록용 진단을 전달한다")
+    func missingTargetIncludesDiagnostic() async {
+        var diagnostics: [String] = []
+        let result = await TargetApp.send(
+            "본문", toAppWithBundleID: "test.missing.\(UUID())", pressReturn: false,
+            onDiagnostic: { diagnostics.append($0) }
+        )
+        #expect(result == .notRunning)
+        #expect(diagnostics == ["게시 전 중단 · 대상 앱이 실행 중이 아님"])
+    }
+
 }

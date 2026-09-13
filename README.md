@@ -133,6 +133,8 @@ STT : 어 내일 아침에 회의 자료를 보내드릴게요 아니 오늘 저
 결과: 오늘 저녁에 회의 자료를 보내드릴게요.
 ```
 
+The `입력:` line records the destination and insertion result in the same entry: confirmed receipt, timeout (whether the before/after accessibility values were readable), focus loss, clipboard ownership changes, pre-paste failure, or cancellation. Open it through Settings → **로그 파일 보기…**. Turning off dictation logging also disables these diagnostics.
+
 The header carries the recording length; the `소요:` line right under it says where the time after key-up went, per path. `apple`: `STT` is from key-up to the final on-device transcript, `다듬기` is the LLM refinement round trip (on a timeout or error, how long was waited before falling back). `llm_audio`: a single `오디오 다듬기` figure, because transcription and refinement are one request. The line is only present for dictations logged by this version — older entries keep their shape.
 
 When the raw transcript was inserted instead, a `원인:` line under the timing says why — the local LLM server was not running (connection refused), the model was still loading (cold start: the warm-up request sent on key-down had not returned), the server answered but too slowly, or an HTTP error:
