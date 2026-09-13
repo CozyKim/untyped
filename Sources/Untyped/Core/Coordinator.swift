@@ -302,9 +302,13 @@ final class Coordinator {
         let loggedAt = Date()
         let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
+        var insertionDiagnostic = ""
+        let insertionTarget = destination == .targetApp ? targetAppName : "현재 앱"
         switch destination {
         case .frontmost:
-            let result = await TextInserter.insert(outcome.text, pressReturn: pressReturn)
+            let result = await TextInserter.insert(
+                outcome.text, pressReturn: pressReturn, onDiagnostic: { insertionDiagnostic = $0 }
+            )
             if result != .inserted {
                 insertFailure = "삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
             }
@@ -312,9 +316,13 @@ final class Coordinator {
             // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
             let result: TargetApp.SendResult
             if let bundleID = config.targetAppBundleID {
-                result = await TargetApp.send(outcome.text, toAppWithBundleID: bundleID, pressReturn: pressReturn)
+                result = await TargetApp.send(
+                    outcome.text, toAppWithBundleID: bundleID, pressReturn: pressReturn,
+                    onDiagnostic: { insertionDiagnostic = $0 }
+                )
             } else {
                 result = .notRunning
+                insertionDiagnostic = "게시 전 중단 · 대상 앱이 설정되지 않음"
             }
             if result == .unconfirmed {
                 insertFailure = "\(targetAppName) 삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
@@ -337,7 +345,8 @@ final class Coordinator {
                 )
             }
             let entry = DictationLog.entry(
-                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause, timing: timing
+                raw: raw, outcome: outcome, recorded: recorded, at: loggedAt, cause: cause, timing: timing,
+                insertion: "\(insertionTarget) · \(insertionDiagnostic)"
             )
             appendLog(entry, to: url)
         }

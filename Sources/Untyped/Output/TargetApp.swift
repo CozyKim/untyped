@@ -43,11 +43,20 @@ enum TargetApp {
 
     /// 대상 앱을 앞으로 가져와 텍스트를 붙여넣고 원래 앱으로 돌아온다.
     @MainActor
-    static func send(_ text: String, toAppWithBundleID bundleID: String, pressReturn: Bool) async -> SendResult {
-        guard let target = runningApplication(bundleID: bundleID) else { return .notRunning }
+    static func send(
+        _ text: String, toAppWithBundleID bundleID: String, pressReturn: Bool,
+        onDiagnostic: (String) -> Void = { _ in }
+    ) async -> SendResult {
+        guard let target = runningApplication(bundleID: bundleID) else {
+            onDiagnostic("게시 전 중단 · 대상 앱이 실행 중이 아님")
+            return .notRunning
+        }
         // 손쉬운 사용 권한이 없으면 키보드 포커스 확인도 ⌘V도 할 수 없다. 앱을 앞으로 가져온 뒤
         // 상한까지 기다리다 포커스만 옮긴 채 실패하지 않도록 전환 전에 돌려보낸다.
-        guard TextInserter.hasAccessibilityPermission else { return .notBroughtToFront }
+        guard TextInserter.hasAccessibilityPermission else {
+            onDiagnostic("게시 전 중단 · 접근성 권한 없음")
+            return .notBroughtToFront
+        }
         var origin: NSRunningApplication?
         let result = await TextInserter.insert(
             text, pressReturn: pressReturn,
@@ -57,7 +66,8 @@ enum TargetApp {
                 if origin != target { _ = target.activate(options: []) }
                 return await waitUntilKeyboardFocus(target)
             },
-            hasFocus: { hasKeyboardFocus(target) }
+            hasFocus: { hasKeyboardFocus(target) },
+            onDiagnostic: onDiagnostic
         )
         // Return의 게시와 소비도 별개다. 기존 복귀 여유는 유지하되, 붙여넣기 수신을
         // 판단하거나 클립보드를 복원하는 근거로 쓰지 않는다.

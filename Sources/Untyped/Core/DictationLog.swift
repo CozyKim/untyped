@@ -45,16 +45,17 @@ enum DictationLog {
     static func entry(
         raw: String?, outcome: RefineOutcome, recorded: Duration,
         at date: Date, timeZone: TimeZone = .current, cause: String? = nil,
-        timing: DictationTiming? = nil
+        timing: DictationTiming? = nil, insertion: String? = nil
     ) -> String {
         let status = switch outcome {
         case .refined: raw == nil ? "오디오에서 바로 다듬음" : "다듬음"
         case .fallback(_, let reason): "원본 (\(reason.label))"
         }
+        let insertionLine = insertion.map { "입력: \($0)\n" } ?? ""
         let sttLine = raw.map { "STT : \($0)\n" } ?? ""
         return """
         \(header(status: status, recorded: recorded, at: date, timeZone: timeZone))
-        \(timingLine(timing))\(causeLine(cause))\(sttLine)결과: \(outcome.text)
+        \(timingLine(timing))\(causeLine(cause))\(insertionLine)\(sttLine)결과: \(outcome.text)
 
         """
     }

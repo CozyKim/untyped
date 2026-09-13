@@ -29,9 +29,13 @@ enum TextInserter {
     static func insert(
         _ text: String, pressReturn: Bool = false,
         prepare: () async -> Bool = { true },
-        hasFocus: (() -> Bool)? = nil
+        hasFocus: (() -> Bool)? = nil,
+        onDiagnostic: (String) -> Void = { _ in }
     ) async -> Result {
-        guard hasAccessibilityPermission else { return .notReady }
+        guard hasAccessibilityPermission else {
+            onDiagnostic("게시 전 중단 · 접근성 권한 없음")
+            return .notReady
+        }
         var recipient: pid_t?
         var focused: AXUIElement?
         return await insert(
@@ -56,6 +60,7 @@ enum TextInserter {
                 if focused == nil { focused = focusedElement() }
                 return focused.flatMap(elementValue)
             },
+            onDiagnostic: onDiagnostic,
             paste: { postKey(vKeyV, flags: .maskCommand) },
             submit: pressReturn ? { postKey(vKeyReturn) } : nil
         )
@@ -71,20 +76,37 @@ enum TextInserter {
         prepare: () async -> Bool = { true },
         hasFocus: () -> Bool = { true },
         targetValue: () -> String? = { nil },
+        onDiagnostic: (String) -> Void = { _ in },
         paste: () -> Bool,
         submit: (() -> Bool)? = nil
     ) async -> Result {
-        guard !text.isEmpty else { return .notReady }
+        var posted = false
+        // 모든 종료 경로의 진단을 호출자에게 넘긴다. 저장 위치·설정은 Coordinator가 결정한다.
+        func report(_ result: Result, detail: String? = nil) -> Result {
+            let summary: String
+            switch result {
+            case .inserted: summary = "수신 확인"
+            case .notReady: summary = "게시 전 중단 · 텍스트 또는 활성화·포커스 확인 실패"
+            case .clipboardChanged: summary = "클립보드 소유권 변경"
+            case .writeFailed: summary = "클립보드 읽기·쓰기 검증 실패"
+            case .eventFailed: summary = "키 이벤트 생성 실패"
+            case .unconfirmed: summary = "수신 미확인"
+            case .cancelled: summary = "취소됨"
+            }
+            onDiagnostic((detail ?? summary) + (posted ? " · ⌘V 게시 후" : " · ⌘V 게시 전"))
+            return result
+        }
+        guard !text.isEmpty else { return report(.notReady) }
         // MainActor는 await 사이의 재진입을 막지 않는다. 대기자가 잠금을 얻은 뒤에만 활성화한다.
         while busy {
             do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return .cancelled }
+            catch { return report(.cancelled) }
         }
-        guard !Task.isCancelled else { return .cancelled }
+        guard !Task.isCancelled else { return report(.cancelled) }
         busy = true
         defer { busy = false }
-        guard await prepare(), hasFocus() else { return .notReady }
-        guard !Task.isCancelled else { return .cancelled }
+        guard await prepare(), hasFocus() else { return report(.notReady) }
+        guard !Task.isCancelled else { return report(.cancelled) }
         // 앱 활성화 완료와 AXValue 준비 완료는 다르다. 한 번의 nil을 기준값으로 고정하면
         // 붙여넣은 전체 텍스트가 나중에 보여도 received가 영원히 false가 된다.
         // 재조회는 반드시 게시 전에 한다. 게시 후 값을 기준값으로 쓰면 수신 증거를 잃는다.
@@ -92,8 +114,8 @@ enum TextInserter {
         var before = targetValue()
         while before == nil, ContinuousClock.now < baselineDeadline {
             do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return .cancelled }
-            guard hasFocus() else { return .notReady }
+            catch { return report(.cancelled) }
+            guard hasFocus() else { return report(.notReady) }
             before = targetValue()
         }
 
@@ -104,59 +126,62 @@ enum TextInserter {
             let saved = NSPasteboardItem()
             for type in item.types {
                 guard let data = item.data(forType: type), saved.setData(data, forType: type) else {
-                    return .writeFailed
+                    return report(.writeFailed)
                 }
             }
             savedItems.append(saved)
         }
-        guard pasteboard.changeCount == originalCount else { return .clipboardChanged }
-        guard hasFocus() else { return .notReady }
+        guard pasteboard.changeCount == originalCount else { return report(.clipboardChanged) }
+        guard hasFocus() else { return report(.notReady) }
 
         let ownedCount = pasteboard.clearContents()
         let wrote = pasteboard.setString(text, forType: .string)
         // clearContents가 소유권 세대를 바꾼다. setString은 같은 세대에 데이터를 채운다.
         // readback과 changeCount를 함께 확인해야 외부 소유자가 쓴 같은 문자열도 구분된다.
-        guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
+        guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
         guard wrote, pasteboard.string(forType: .string) == text else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-            return .writeFailed
+            return report(.writeFailed)
         }
-        guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
+        guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
         guard !Task.isCancelled, hasFocus() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-            return Task.isCancelled ? .cancelled : .notReady
+            return report(Task.isCancelled ? .cancelled : .notReady)
         }
         guard paste() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-            return .eventFailed
+            return report(.eventFailed)
         }
 
+        posted = true
         let deadline = ContinuousClock.now + timeout
         while true {
             // 게시 뒤의 실패는 이미 소비했을 가능성이 있다. 복원·재전송·Return을 추측하지 않는다.
-            guard !Task.isCancelled else { return .cancelled }
+            guard !Task.isCancelled else { return report(.cancelled) }
             guard hasFocus() else {
-                NSLog("[Paste] unconfirmed reason=focus_changed")
-                return .unconfirmed
+                return report(.unconfirmed, detail: "포커스 변경으로 수신 미확인")
             }
-            guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
-            if received(text, before: before, after: targetValue()) {
+            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+            let after = targetValue()
+            if received(text, before: before, after: after) {
                 // 수신 관측 중의 동기 IPC에서도 외부 소유권·포커스가 바뀔 수 있다.
-                guard hasFocus(), pasteboard.changeCount == ownedCount else { return .unconfirmed }
+                guard hasFocus(), pasteboard.changeCount == ownedCount else {
+                    return report(.unconfirmed, detail: "수신 관측 중 포커스 또는 클립보드 소유권 변경")
+                }
                 if let submit, !submit() {
                     restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                    return .eventFailed
+                    return report(.eventFailed)
                 }
                 restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return .inserted
+                return report(.inserted)
             }
             guard ContinuousClock.now < deadline else {
-                // 텍스트 본문은 기록하지 않는다. 다음 진단에서 읽기 불가와 내용 불일치를 구분한다.
-                NSLog("[Paste] unconfirmed reason=timeout baselineReadable=\(before != nil) currentReadable=\(targetValue() != nil)")
-                return .unconfirmed
+                let baseline = before == nil ? "읽기 불가" : "읽기 가능"
+                let current = after == nil ? "읽기 불가" : "읽기 가능"
+                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)")
             }
             do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return .cancelled }
+            catch { return report(.cancelled) }
         }
     }
 
