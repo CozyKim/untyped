@@ -1,157 +1,187 @@
 import AppKit
 import ApplicationServices
 
-/// 완성된 문자열만 받는다. 전사도 다듬기도 모른다.
+/// 완성된 문자열의 전달을 직렬화한다. 이벤트 게시는 수신 완료가 아니다.
 enum TextInserter {
-    /// 붙여넣기가 클립보드를 읽기 전에 복원하면 옛 내용이 대신 붙여넣어진다.
-    /// 옛 내용은 직전 받아쓰기 후 복원해 둔 사용자의 클립보드이므로, 이 실패는
-    /// "다시 녹음해도 직전에 삽입된 문장이 그대로 들어가는" 증상으로 나타난다.
-    ///
-    /// 150ms는 TextEdit 같은 가벼운 앱에서는 충분했지만, Obsidian 등 Chromium·Electron
-    /// 계열은 붙여넣기가 렌더러↔브라우저 프로세스 IPC를 거치고 다듬기 서버가 GPU를
-    /// 막 쓰고 난 직후엔 더 느려져 150ms를 넘길 수 있다.
-    ///
-    /// macOS는 붙여넣기가 클립보드를 읽었는지 알려주지 않는다. NSPasteboardItemDataProvider로
-    /// "읽힘" 시점을 잡는 방법은 Raycast 같은 클립보드 히스토리가 대상 앱보다 먼저 읽어 가면
-    /// 오히려 더 일찍 복원되므로 쓸 수 없다. 남는 선택은 넉넉한 고정 지연이다.
-    /// 복원은 호출자를 기다리게 하지 않으므로(아래 `pendingRestore`) 지연을 늘려도 오버레이나
-    /// 다음 받아쓰기 시작이 늦어지지 않는다. 너무 짧으면 잘못된 텍스트가 조용히 들어가고,
-    /// 너무 길면 그 사이 사용자가 직접 Cmd+V를 눌렀을 때 받아쓰기 텍스트가 나오는 정도이므로
-    /// 긴 쪽으로 여유 있게 잡는다.
-    static let restoreDelay: Duration = .seconds(1)
-
-    /// ⌘V 뒤 붙여넣은 텍스트가 실제로 입력창에 나타날 때까지 기다리는 상한. 그 전에 Return을
-    /// 보내면 빈 입력창에 눌려 아무 일도 안 일어나고 그 뒤에 텍스트만 들어온다. 나타나는
-    /// 시점은 한가할 때도 TextEdit 220ms, Chromium 입력창 126ms로 앱과 부하에 따라 달라
-    /// 고정 지연으로는 맞출 수 없다. 값을 노출하지 않는 앱을 위해 상한 뒤에는 그냥 보낸다.
-    static let pasteSettleTimeout: Duration = .seconds(1)
-
-    /// 직전 삽입의 복원 작업. 다음 삽입은 스냅샷을 뜨기 전에 이 작업을 기다린다.
-    @MainActor
-    private static var pendingRestore: Task<Void, Never>?
-
-    static var hasAccessibilityPermission: Bool {
-        AXIsProcessTrusted()
+    enum Result: Equatable, Sendable {
+        case inserted
+        case notReady
+        case clipboardChanged
+        case writeFailed
+        case eventFailed
+        case unconfirmed
+        case cancelled
     }
 
+    static let pasteSettleTimeout: Duration = .seconds(3)
+    @MainActor private static var busy = false
+
+    static var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
+
     static func requestAccessibilityPermission() {
-        // Swift 6 strict concurrency에서 C global kAXTrustedCheckOptionPrompt 직접 참조 불가.
-        // 이 상수의 문서된 문자열 값은 "AXTrustedCheckOptionPrompt"이므로 리터럴로 사용한다.
         let options = ["AXTrustedCheckOptionPrompt": true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    /// 완료된 텍스트를 클립보드 경유로 삽입한다. 붙여넣기 이벤트를 보낸 뒤 — `pressReturn`이면
-    /// 텍스트가 나타난 것을 확인하고 Return까지 보낸 뒤 — 반환하며, 클립보드 복원은
-    /// `restoreDelay` 뒤에 따로 이루어진다.
-    /// 동시 호출은 인정되지 않는다. 두 호출이 겹치면 각 호출이 자신의 변경 수 검사로만
-    /// 보호되므로 첫 번째 호출의 받아쓰기 내용이 남거나 클립보드가 완전히 비게 된다.
-    /// 호출자는 이 함수의 동시성을 직렬화해야 한다.
+    /// 준비(앱 활성화)부터 수신 확인·클립보드 복원까지 한 트랜잭션으로 실행한다.
     @MainActor
-    static func insert(_ text: String, pressReturn: Bool = false) async {
-        guard !text.isEmpty else { return }
-
-        // Accessibility 권한이 없으면 CGEventPost가 무음으로 실패하고 클립보드만 손상된다.
-        // 사전에 검사하여 변경 없이 반환하는 것이 낫다.
-        guard hasAccessibilityPermission else { return }
-
-        await insert(text, into: .general, paste: postCommandV)
-        if pressReturn {
-            await waitUntilPasted(text)
-            postKey(vKeyReturn)
-        }
-    }
-
-    /// 클립보드와 붙여넣기 동작을 주입받는 핵심 경로. 테스트는 이름 있는 pasteboard와
-    /// 아무것도 하지 않는 `paste`를 넘겨, 테스트 자신이 "클립보드를 읽는 앱" 역할을 한다.
-    @MainActor
-    static func insert(_ text: String, into pasteboard: NSPasteboard, paste: () -> Void) async {
-        // 직전 삽입의 복원이 아직 남아 있으면 먼저 끝낸다. 지금 스냅샷을 뜨면 원래 클립보드가
-        // 아니라 직전 받아쓰기 텍스트를 담게 되고, 직전 복원은 변경 수 불일치로 건너뛰어져
-        // 사용자의 원래 클립보드가 영영 사라진다.
-        await pendingRestore?.value
-
-        // 클립보드 전체 스냅샷 생성. lazy file promise는 clearContents()로 소유권을 잃으면
-        // 콜백을 다시 호출할 수 없으므로 복원 불가능하다. 손실은 불가피하다.
-        var savedItems: [NSPasteboardItem] = []
-        if let items = pasteboard.pasteboardItems {
-            for item in items {
-                let newItem = NSPasteboardItem()
-                for typeStr in item.types {
-                    if let data = item.data(forType: typeStr) {
-                        newItem.setData(data, forType: typeStr)
-                    }
+    @discardableResult
+    static func insert(
+        _ text: String, pressReturn: Bool = false,
+        prepare: () async -> Bool = { true },
+        hasFocus: (() -> Bool)? = nil
+    ) async -> Result {
+        guard hasAccessibilityPermission else { return .notReady }
+        var recipient: pid_t?
+        var focused: AXUIElement?
+        return await insert(
+            text, into: .general,
+            prepare: {
+                guard await prepare() else { return false }
+                recipient = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                focused = focusedElement()
+                return recipient != nil
+            },
+            hasFocus: {
+                guard let recipient else { return false }
+                if let focused {
+                    guard let current = focusedElement(), CFEqual(focused, current) else { return false }
                 }
-                savedItems.append(newItem)
+                return NSWorkspace.shared.frontmostApplication?.processIdentifier == recipient
+                    && TargetApp.focusedApplicationPID() == recipient
+                    && (hasFocus?() ?? true)
+            },
+            targetValue: { focused.flatMap(elementValue) },
+            paste: { postKey(vKeyV, flags: .maskCommand) },
+            submit: pressReturn ? { postKey(vKeyReturn) } : nil
+        )
+    }
+
+    /// 이름 있는 실제 pasteboard와 수신 앱 경계를 주입할 수 있다. 본문은 로그에 남기지 않는다.
+    /// timeout은 성공을 뜻하지 않는다. 수신을 확인하지 못하면 새 텍스트를 유지하고 재전송하지 않는다.
+    @MainActor
+    @discardableResult
+    static func insert(
+        _ text: String, into pasteboard: NSPasteboard,
+        timeout: Duration = pasteSettleTimeout,
+        prepare: () async -> Bool = { true },
+        hasFocus: () -> Bool = { true },
+        targetValue: () -> String? = { nil },
+        paste: () -> Bool,
+        submit: (() -> Bool)? = nil
+    ) async -> Result {
+        guard !text.isEmpty else { return .notReady }
+        // MainActor는 await 사이의 재진입을 막지 않는다. 대기자가 잠금을 얻은 뒤에만 활성화한다.
+        while busy {
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch { return .cancelled }
+        }
+        guard !Task.isCancelled else { return .cancelled }
+        busy = true
+        defer { busy = false }
+        guard await prepare(), hasFocus() else { return .notReady }
+        guard !Task.isCancelled else { return .cancelled }
+        let before = targetValue()
+
+        // 소유권을 넘기기 전에 모든 표현을 materialize한다. 읽지 못한 표현이 있으면 손실 없이 중단한다.
+        let originalCount = pasteboard.changeCount
+        var savedItems: [NSPasteboardItem] = []
+        for item in pasteboard.pasteboardItems ?? [] {
+            let saved = NSPasteboardItem()
+            for type in item.types {
+                guard let data = item.data(forType: type), saved.setData(data, forType: type) else {
+                    return .writeFailed
+                }
             }
+            savedItems.append(saved)
+        }
+        guard pasteboard.changeCount == originalCount else { return .clipboardChanged }
+        guard hasFocus() else { return .notReady }
+
+        let ownedCount = pasteboard.clearContents()
+        let wrote = pasteboard.setString(text, forType: .string)
+        // clearContents가 소유권 세대를 바꾼다. setString은 같은 세대에 데이터를 채운다.
+        // readback과 changeCount를 함께 확인해야 외부 소유자가 쓴 같은 문자열도 구분된다.
+        guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
+        guard wrote, pasteboard.string(forType: .string) == text else {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return .writeFailed
+        }
+        guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
+        guard !Task.isCancelled, hasFocus() else {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return Task.isCancelled ? .cancelled : .notReady
+        }
+        guard paste() else {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return .eventFailed
         }
 
-        let myChangeCount = pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        paste()
-
-        // 복원을 호출자와 분리한다. 호출자는 삽입이 끝나면 곧바로 오버레이를 내리고
-        // 다음 받아쓰기를 받을 수 있어야 하므로 복원 지연이 그 경로를 막아서는 안 된다.
-        pendingRestore = Task { @MainActor in
-            try? await Task.sleep(for: restoreDelay)
-
-            // 다른 프로세스가 클립보드에 개입하지 않았으면 원래 내용으로 복원한다.
-            guard pasteboard.changeCount == myChangeCount else { return }
-            pasteboard.clearContents()
-            if !savedItems.isEmpty {
-                pasteboard.writeObjects(savedItems)
+        let deadline = ContinuousClock.now + timeout
+        while true {
+            // 게시 뒤의 실패는 이미 소비했을 가능성이 있다. 복원·재전송·Return을 추측하지 않는다.
+            guard !Task.isCancelled else { return .cancelled }
+            guard hasFocus() else { return .unconfirmed }
+            guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
+            if received(text, before: before, after: targetValue()) {
+                // 수신 관측 중의 동기 IPC에서도 외부 소유권·포커스가 바뀔 수 있다.
+                guard hasFocus(), pasteboard.changeCount == ownedCount else { return .unconfirmed }
+                if let submit, !submit() {
+                    restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                    return .eventFailed
+                }
+                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                return .inserted
             }
+            guard ContinuousClock.now < deadline else { return .unconfirmed }
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch { return .cancelled }
         }
     }
 
-    /// HIToolbox/Events.h의 kVK_* 값.
+    /// 과거 내용이나 동일한 끝 20글자는 수신 증거가 아니다. 전체 텍스트가 새로 나타나야 한다.
+    /// 이미 같은 문장이 있으면 개수가 증가해야 한다. 동일 선택 영역 치환은 보수적으로 미확인 처리한다.
+    static func received(_ text: String, before: String?, after: String?) -> Bool {
+        guard let before, let after, before != after, !text.isEmpty else { return false }
+        return after.components(separatedBy: text).count > before.components(separatedBy: text).count
+    }
+
+    @MainActor
+    private static func restore(_ items: [NSPasteboardItem], to board: NSPasteboard, ifOwned count: Int) {
+        guard board.changeCount == count else { return }
+        board.clearContents()
+        if !items.isEmpty { board.writeObjects(items) }
+    }
+
     private static let vKeyV: CGKeyCode = 9
     private static let vKeyReturn: CGKeyCode = 36
 
-    private static func postCommandV() {
-        postKey(vKeyV, flags: .maskCommand)
-    }
-
-    private static func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
+    private static func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) -> Bool {
         let source = CGEventSource(stateID: .combinedSessionState)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        else { return }
+        else { return false }
         down.flags = flags
         up.flags = flags
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+        return true
     }
 
-    /// 붙여넣은 텍스트의 끝부분이 포커스된 요소의 값에 나타날 때까지 기다린다.
-    /// 끝부분만 비교하는 이유: 입력창에 이미 다른 내용이 있을 수 있고, 앱이 줄바꿈을
-    /// 문단으로 바꾸는 등 앞부분을 다르게 표현할 수 있다.
-    @MainActor
-    private static func waitUntilPasted(_ text: String) async {
-        let tail = String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(20))
-        guard !tail.isEmpty else { return }
-        let deadline = ContinuousClock.now + pasteSettleTimeout
-        while ContinuousClock.now < deadline {
-            if focusedElementValue()?.contains(tail) == true { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    /// 앞에 있는 앱의 포커스된 요소가 노출하는 문자열 값. 텍스트 입력창이 아니거나 앱이
-    /// 접근성 값을 제공하지 않으면 nil.
-    /// 접근성 호출은 대상 앱 프로세스로 가는 동기 IPC라, 앱이 멈춰 있으면 시스템 기본
-    /// 타임아웃(수 초)까지 메인 액터가 막힌다. 요소마다 짧은 타임아웃을 걸어 상한을 지킨다.
-    private static func focusedElementValue() -> String? {
+    /// 관측 대상 요소를 게시 전에 고정한다. 뒤늦게 바뀐 다른 앱/입력창을 성공 증거로 쓰지 않는다.
+    private static func focusedElement() -> AXUIElement? {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.1)
         var element: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &element) == .success,
-              let element
-        else { return nil }
+              let element else { return nil }
         let focused = element as! AXUIElement
         AXUIElementSetMessagingTimeout(focused, 0.1)
+        return focused
+    }
+
+    private static func elementValue(_ focused: AXUIElement) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &value) == .success
         else { return nil }
