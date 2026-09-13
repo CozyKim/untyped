@@ -51,7 +51,11 @@ enum TextInserter {
                     && TargetApp.focusedApplicationPID() == recipient
                     && (hasFocus?() ?? true)
             },
-            targetValue: { focused.flatMap(elementValue) },
+            targetValue: {
+                // 활성화 직후 AX 트리가 아직 준비되지 않았으면 다음 기준값 조회에서 다시 찾는다.
+                if focused == nil { focused = focusedElement() }
+                return focused.flatMap(elementValue)
+            },
             paste: { postKey(vKeyV, flags: .maskCommand) },
             submit: pressReturn ? { postKey(vKeyReturn) } : nil
         )
@@ -81,7 +85,17 @@ enum TextInserter {
         defer { busy = false }
         guard await prepare(), hasFocus() else { return .notReady }
         guard !Task.isCancelled else { return .cancelled }
-        let before = targetValue()
+        // 앱 활성화 완료와 AXValue 준비 완료는 다르다. 한 번의 nil을 기준값으로 고정하면
+        // 붙여넣은 전체 텍스트가 나중에 보여도 received가 영원히 false가 된다.
+        // 재조회는 반드시 게시 전에 한다. 게시 후 값을 기준값으로 쓰면 수신 증거를 잃는다.
+        let baselineDeadline = ContinuousClock.now + min(timeout, .milliseconds(300))
+        var before = targetValue()
+        while before == nil, ContinuousClock.now < baselineDeadline {
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch { return .cancelled }
+            guard hasFocus() else { return .notReady }
+            before = targetValue()
+        }
 
         // 소유권을 넘기기 전에 모든 표현을 materialize한다. 읽지 못한 표현이 있으면 손실 없이 중단한다.
         let originalCount = pasteboard.changeCount
@@ -121,7 +135,10 @@ enum TextInserter {
         while true {
             // 게시 뒤의 실패는 이미 소비했을 가능성이 있다. 복원·재전송·Return을 추측하지 않는다.
             guard !Task.isCancelled else { return .cancelled }
-            guard hasFocus() else { return .unconfirmed }
+            guard hasFocus() else {
+                NSLog("[Paste] unconfirmed reason=focus_changed")
+                return .unconfirmed
+            }
             guard pasteboard.changeCount == ownedCount else { return .clipboardChanged }
             if received(text, before: before, after: targetValue()) {
                 // 수신 관측 중의 동기 IPC에서도 외부 소유권·포커스가 바뀔 수 있다.
@@ -133,7 +150,11 @@ enum TextInserter {
                 restore(savedItems, to: pasteboard, ifOwned: ownedCount)
                 return .inserted
             }
-            guard ContinuousClock.now < deadline else { return .unconfirmed }
+            guard ContinuousClock.now < deadline else {
+                // 텍스트 본문은 기록하지 않는다. 다음 진단에서 읽기 불가와 내용 불일치를 구분한다.
+                NSLog("[Paste] unconfirmed reason=timeout baselineReadable=\(before != nil) currentReadable=\(targetValue() != nil)")
+                return .unconfirmed
+            }
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return .cancelled }
         }
