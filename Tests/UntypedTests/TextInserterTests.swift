@@ -188,4 +188,44 @@ struct TextInserterTests {
         #expect(board.string(forType: .string) == "전체 문장")
     }
 
+    @Test("접근성 입력값이 늦게 준비되어도 게시 전 기준값을 확보한다")
+    func waitsForInitiallyUnavailableValue() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var reads = 0
+        var posted = false
+        var submitted = 0
+        let result = await TextInserter.insert(
+            "전체 문장", into: board, timeout: .milliseconds(100), targetValue: {
+                reads += 1
+                if reads == 1 { return nil }
+                return posted ? "전체 문장" : ""
+            }, paste: {
+                #expect(reads >= 2)
+                posted = true
+                return true
+            }, submit: { submitted += 1; return true }
+        )
+        #expect(result == .inserted)
+        #expect(submitted == 1)
+        #expect(board.string(forType: .string) == "원본")
+    }
+
+    @Test("게시 후 나타난 값은 사전 기준값으로 사용하지 않는다")
+    func unavailableBaselineDoesNotTreatPostPasteValueAsBaseline() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var posted = false
+        var submits = 0
+        let result = await TextInserter.insert(
+            "전체 문장", into: board, timeout: .milliseconds(20),
+            targetValue: { posted ? "전체 문장" : nil },
+            paste: { posted = true; return true },
+            submit: { submits += 1; return true }
+        )
+        #expect(result == .unconfirmed)
+        #expect(submits == 0)
+        #expect(board.string(forType: .string) == "전체 문장")
+    }
+
 }
