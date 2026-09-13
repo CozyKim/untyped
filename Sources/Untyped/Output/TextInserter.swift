@@ -38,6 +38,7 @@ enum TextInserter {
         }
         var recipient: pid_t?
         var focused: AXUIElement?
+        var focusFailure: String?
         return await insert(
             text, into: .general,
             prepare: {
@@ -49,18 +50,34 @@ enum TextInserter {
             hasFocus: {
                 guard let recipient else { return false }
                 if let focused {
-                    guard let current = focusedElement(), CFEqual(focused, current) else { return false }
+                    guard let current = focusedElement() else {
+                        focusFailure = "현재 입력 요소 조회 실패"
+                        return false
+                    }
+                    guard CFEqual(focused, current) else {
+                        focusFailure = "입력 요소 변경"
+                        return false
+                    }
                 }
-                return NSWorkspace.shared.frontmostApplication?.processIdentifier == recipient
-                    && TargetApp.focusedApplicationPID() == recipient
-                    && (hasFocus?() ?? true)
+                guard TargetApp.hasKeyboardFocus(pid: recipient) else {
+                    focusFailure = "대상 앱의 키보드 포커스 확인 실패"
+                    return false
+                }
+                guard hasFocus?() ?? true else {
+                    focusFailure = "대상 앱 포커스 조건 불일치"
+                    return false
+                }
+                focusFailure = nil
+                return true
             },
             targetValue: {
                 // 활성화 직후 AX 트리가 아직 준비되지 않았으면 다음 기준값 조회에서 다시 찾는다.
                 if focused == nil { focused = focusedElement() }
                 return focused.flatMap(elementValue)
             },
-            onDiagnostic: onDiagnostic,
+            onDiagnostic: { message in
+                onDiagnostic(message + (focusFailure.map { " · " + $0 } ?? ""))
+            },
             paste: { postKey(vKeyV, flags: .maskCommand) },
             submit: pressReturn ? { postKey(vKeyReturn) } : nil
         )

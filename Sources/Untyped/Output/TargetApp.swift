@@ -110,8 +110,43 @@ enum TargetApp {
     }
 
     private static func hasKeyboardFocus(_ app: NSRunningApplication) -> Bool {
-        guard NSWorkspace.shared.frontmostApplication == app else { return false }
-        return focusedApplicationPID() == app.processIdentifier
+        hasKeyboardFocus(pid: app.processIdentifier)
+    }
+
+    /// 시스템 전체 AX 조회가 CannotComplete로 실패해도 앱별 AXFocused 증거는 유효할 수 있다.
+    static func hasKeyboardFocus(pid: pid_t) -> Bool {
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard frontmostPID == pid else { return false }
+        let systemPID = focusedApplicationPID()
+        // 다른 앱이라는 명시적인 증거는 폴백으로 무시하지 않는다.
+        if let systemPID { return systemPID == pid }
+        return keyboardFocusMatches(
+            frontmostPID: frontmostPID, targetPID: pid, focusedApplicationPID: nil,
+            elementIsFocused: applicationElementIsFocused(pid: pid)
+        )
+    }
+
+    private static func applicationElementIsFocused(pid: pid_t) -> Bool? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.1)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+              let value else { return nil }
+        let element = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString, &focused) == .success
+        else { return nil }
+        return focused as? Bool
+    }
+
+    /// 시스템 포커스 조회와 앱별 입력 요소의 포커스 증거를 판정한다.
+    static func keyboardFocusMatches(
+        frontmostPID: pid_t?, targetPID: pid_t, focusedApplicationPID: pid_t?, elementIsFocused: Bool?
+    ) -> Bool {
+        guard frontmostPID == targetPID else { return false }
+        if let focusedApplicationPID { return focusedApplicationPID == targetPID }
+        return elementIsFocused == true
     }
 
     /// 접근성 시스템이 보고하는, 지금 키보드 포커스를 가진 앱의 pid. 손쉬운 사용 권한이 없거나
