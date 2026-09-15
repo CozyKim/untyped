@@ -8,6 +8,8 @@ enum DictationTiming: Equatable, Sendable {
     case apple(transcription: Duration, refinement: Duration)
     /// 1단계 — 오디오를 보낸 LLM 요청 하나. 전사와 다듬기가 한 요청이라 나눌 수 없다.
     case llmAudio(request: Duration)
+    /// STT만 — 다듬기 단계가 없다.
+    case appleOnly(transcription: Duration)
 
     var line: String {
         switch self {
@@ -15,6 +17,8 @@ enum DictationTiming: Equatable, Sendable {
             "STT \(transcription.tenths)초 · 다듬기 \(refinement.tenths)초"
         case .llmAudio(let request):
             "오디오 다듬기 \(request.tenths)초"
+        case .appleOnly(let transcription):
+            "STT \(transcription.tenths)초"
         }
     }
 }
@@ -50,6 +54,7 @@ enum DictationLog {
         let status = switch outcome {
         case .refined: raw == nil ? "오디오에서 바로 다듬음" : "다듬음"
         case .fallback(_, let reason): "원본 (\(reason.label))"
+        case .transcribed: "STT만"
         }
         let insertionLine = insertion.map { "입력: \($0)\n" } ?? ""
         let sttLine = raw.map { "STT : \($0)\n" } ?? ""

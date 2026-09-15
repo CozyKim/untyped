@@ -165,6 +165,22 @@ private func temporaryLogURL() -> URL {
     #expect(failed == "[2026-09-11 22:10:33] 녹음 7.2초 · 삽입 안 함 (다듬기 서버 오류)\n소요: 오디오 다듬기 0.1초\n원인: HTTP 400\n")
 }
 
+@Test func transcribedEntryMarksSTTOnlyWithTranscriptionTiming() {
+    // STT만 쓰면 다듬기 단계가 없다 — 상태도 소요 시간도 다듬기를 언급하지 않는다.
+    let entry = DictationLog.entry(
+        raw: "오늘 저녁에", outcome: .transcribed("오늘 저녁에"),
+        recorded: .seconds(3), at: fixedDate, timeZone: seoul,
+        timing: .appleOnly(transcription: .milliseconds(280))
+    )
+    #expect(entry == """
+    [2026-09-11 22:10:33] 녹음 3.0초 · STT만
+    소요: STT 0.3초
+    STT : 오늘 저녁에
+    결과: 오늘 저녁에
+
+    """)
+}
+
 @Test func entriesWithoutTimingKeepTheOldFormat() {
     // timing을 안 주면 이전 형식 그대로다 — 기존 로그를 읽는 쪽이 깨지지 않는다.
     let entry = DictationLog.entry(

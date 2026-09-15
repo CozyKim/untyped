@@ -7,6 +7,11 @@ enum TranscriptionBackend: String, Codable, CaseIterable, Sendable {
     /// 1단계 — 녹음 오디오를 다듬기 서버의 LLM에 보내 전사와 다듬기를 한 요청으로 한다.
     /// 모델이 오디오 입력을 받아야 한다(예: gemma-4-e2b-it). SpeechAnalyzer는 쓰지 않는다.
     case llmAudio = "llm_audio"
+    /// STT만 — SpeechAnalyzer 전사를 다듬지 않고 그대로 넣는다. 다듬기 서버가 필요 없다.
+    case appleOnly = "apple_only"
+
+    /// LLM이 텍스트를 만드는 경로인지. 예열, 메뉴의 서버 안내, 다듬기 요청이 모두 이 값으로 갈린다.
+    var refinesText: Bool { self != .appleOnly }
 }
 
 /// 사용자 설정. ~/Library/Application Support/Untyped/config.json에서 읽고 쓴다.

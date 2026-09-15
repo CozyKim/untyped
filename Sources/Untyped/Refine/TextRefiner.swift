@@ -96,11 +96,13 @@ func failureDetail(of error: any Error) -> String {
 enum RefineOutcome: Equatable, Sendable {
     case refined(String)
     case fallback(String, FallbackReason)
+    /// 설정상 다듬기를 거치지 않은 전사. 폴백이 아니라 의도한 결과라 알림·Return 게이트에 걸리지 않는다.
+    case transcribed(String)
 
     /// 실제로 삽입할 텍스트.
     var text: String {
         switch self {
-        case .refined(let text), .fallback(let text, _): text
+        case .refined(let text), .fallback(let text, _), .transcribed(let text): text
         }
     }
 }

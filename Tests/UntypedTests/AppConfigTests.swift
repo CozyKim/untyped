@@ -301,6 +301,16 @@ private let sampleWithTargetApp: AppConfig = {
     #expect(config.pressesReturn(for: .targetApp, outcome: fallback) == false)
 }
 
+@Test func transcribedOutcomePressesReturnLikeRefined() {
+    // STT만 쓰기로 한 결과는 폴백이 아니라 의도한 결과다 — 원본-삽입 토글과 무관하게 경로별 토글만 본다.
+    var config = sample
+    config.pressReturn = true
+    config.pressReturnOnFallback = false
+    let transcribed = RefineOutcome.transcribed("x")
+    #expect(config.pressesReturn(for: .frontmost, outcome: transcribed) == true)
+    #expect(config.pressesReturn(for: .targetApp, outcome: transcribed) == false)
+}
+
 @Test func transcriptionBackendDefaultsToAppleAndRoundTrips() throws {
     // 기본은 Apple — 기존 사용자의 동작이 바뀌면 안 된다.
     #expect(AppConfig.defaultConfig.transcriptionBackend == .apple)
@@ -314,6 +324,20 @@ private let sampleWithTargetApp: AppConfig = {
     let customObject = try #require(JSONSerialization.jsonObject(with: customData) as? [String: Any])
     #expect(customObject["transcription_backend"] as? String == "llm_audio")
     #expect(try JSONDecoder().decode(AppConfig.self, from: customData) == custom)
+}
+
+@Test func appleOnlyBackendRoundTripsAndSkipsRefinement() throws {
+    var custom = sample
+    custom.transcriptionBackend = .appleOnly
+    let data = try JSONEncoder().encode(custom)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["transcription_backend"] as? String == "apple_only")
+    #expect(try JSONDecoder().decode(AppConfig.self, from: data) == custom)
+
+    // 예열·메뉴 안내·다듬기 요청이 모두 이 값 하나로 갈린다.
+    #expect(TranscriptionBackend.appleOnly.refinesText == false)
+    #expect(TranscriptionBackend.apple.refinesText == true)
+    #expect(TranscriptionBackend.llmAudio.refinesText == true)
 }
 
 @Test func legacyFileWithoutTranscriptionBackendReadsApple() throws {

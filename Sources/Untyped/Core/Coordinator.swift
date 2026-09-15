@@ -30,6 +30,9 @@ final class Coordinator {
     /// 녹음을 받는 쪽. 설정의 전사 방식에 따라 둘 중 하나만 있다.
     private var transcriber: Transcriber?
     private var recorder: AudioRecorder?
+    /// 이번 녹음이 시작될 때의 전사 방식. Apple 두 경로(다듬기 있음·없음)는 싱크가 같아 어느 싱크가
+    /// 살아 있는지만으로는 가릴 수 없고, 녹음 중에 설정이 바뀌어도 이 녹음은 시작한 쪽을 따라야 한다.
+    private var captureBackend: TranscriptionBackend = .apple
     private let muter = SystemAudioMuter()
     /// beginCapture()를 감싼 핸들. 짧게 눌렀다 떼면 setup이 끝나기 전에
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
@@ -157,11 +160,12 @@ final class Coordinator {
             // 서버가 모델이 이미 올라와 있다고 답하면(oMLX /health) 1토큰 요청도 보내지 않는다 —
             // 녹음 시작과 겹치는 부하를 줄인다. 확인이 안 되는 서버는 지금까지처럼 예열한다.
             // 예열을 꺼 두면 health 확인도 하지 않는다 — 그 결과로 정하는 일이 예열뿐이다.
+            // STT만 쓰는 경로는 LLM에 아무것도 묻지 않으므로 예열도 없다.
             // 상태는 매번 비워 이전 녹음의 예열 시각이 이번 로그에 섞이지 않게 한다.
             warmUpStartedAt = nil
             warmUpFinishedAt = nil
             warmUpSkipped = false
-            if config.warmUpEnabled {
+            if config.warmUpEnabled, config.transcriptionBackend.refinesText {
                 let refiner = refiner
                 let startedAt = ContinuousClock.now
                 warmUpStartedAt = startedAt
@@ -198,11 +202,12 @@ final class Coordinator {
         async let renderers = muter.tapRenderers()
         do {
             // 백엔드는 녹음 시작 시점의 설정을 따른다. 녹음 중에 바뀌어도 이 녹음은 시작한
-            // 쪽이 받는다 — finishAndInsert()는 어느 싱크가 살아 있는지로 판단한다.
+            // 쪽이 받는다 — finishAndInsert()는 어느 싱크가 살아 있는지와 이 스냅샷으로 판단한다.
             let backend = config.transcriptionBackend
+            captureBackend = backend
             let format: AVAudioFormat
             switch backend {
-            case .apple: format = try await Transcriber.targetAudioFormat()
+            case .apple, .appleOnly: format = try await Transcriber.targetAudioFormat()
             case .llmAudio: format = AudioRecorder.format
             }
             let newCapture = AudioCapture(targetFormat: format) { [weak self] value in
@@ -213,7 +218,7 @@ final class Coordinator {
             }
             let stream = try await newCapture.start()
             switch backend {
-            case .apple:
+            case .apple, .appleOnly:
                 let newTranscriber = Transcriber()
                 // 미리보기는 이 경로에만 있다 — 1단계(LLM 오디오)는 Apple STT를 쓰지 않아 중간 결과가 없다.
                 try await newTranscriber.begin(inputSequence: stream) { [weak self] text in
@@ -279,9 +284,14 @@ final class Coordinator {
             guard !text.isEmpty else { reset(); return }
             raw = text
             timeout = refineTimeout(for: recorded, base: base)
-            let refinementStartedAt = ContinuousClock.now
-            outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
-            timing = .apple(transcription: transcription, refinement: .now - refinementStartedAt)
+            if captureBackend.refinesText {
+                let refinementStartedAt = ContinuousClock.now
+                outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
+                timing = .apple(transcription: transcription, refinement: .now - refinementStartedAt)
+            } else {
+                outcome = .transcribed(text)
+                timing = .appleOnly(transcription: transcription)
+            }
         } else if let recorder {
             let wav = await recorder.finish()
             guard !wav.isEmpty else { reset(); return }

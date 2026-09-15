@@ -31,7 +31,8 @@ struct MenuBarApp: App {
                 Divider()
             }
             Text(statusLabel)
-            if !coordinator.refinerAvailable {
+            // STT만 쓰는 설정에서는 서버가 꺼져 있는 것이 정상이라 안내하지 않는다.
+            if !coordinator.refinerAvailable, coordinator.config.transcriptionBackend.refinesText {
                 Divider()
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
             }
