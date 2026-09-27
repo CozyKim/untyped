@@ -7,6 +7,8 @@ import ApplicationServices
 enum TargetApp {
     enum SendResult: Equatable, Sendable {
         case inserted
+        /// 터미널의 숨은 입력창에 게시했지만 수신 검증은 지원하지 않는다.
+        case postedWithoutVerification
         /// 대상 앱이 실행 중이 아니다. 녹음을 시작한 뒤 사용자가 앱을 종료한 경우.
         case notRunning
         /// 활성화를 요청했지만 시간 안에 키보드 포커스가 넘어오지 않았다. 이때 ⌘V를 보내면
@@ -86,6 +88,7 @@ enum TargetApp {
         }
         switch result {
         case .inserted: return .inserted
+        case .postedWithoutVerification: return .postedWithoutVerification
         case .notReady: return .notBroughtToFront
         default: return .unconfirmed
         }

@@ -5,6 +5,8 @@ import ApplicationServices
 enum TextInserter {
     enum Result: Equatable, Sendable {
         case inserted
+        /// xterm의 숨은 입력창처럼 수신 값을 제공하지 않는 대상에 게시했다.
+        case postedWithoutVerification
         case notReady
         case clipboardChanged
         case writeFailed
@@ -83,6 +85,13 @@ enum TextInserter {
                 if focused == nil { focused = focusedElement() }
                 return focused.flatMap(elementValue)
             },
+            targetIsTransient: {
+                guard let focused else { return false }
+                return isTransientInput(
+                    role: elementAttribute(focused, kAXRoleAttribute) as? String,
+                    domClasses: elementAttribute(focused, "AXDOMClassList") as? [String] ?? []
+                )
+            },
             onDiagnostic: { message in
                 onDiagnostic(message + (focusFailure.map { " · " + $0 } ?? ""))
             },
@@ -92,7 +101,7 @@ enum TextInserter {
     }
 
     /// 이름 있는 실제 pasteboard와 수신 앱 경계를 주입할 수 있다. 본문은 로그에 남기지 않는다.
-    /// timeout은 성공을 뜻하지 않는다. 수신을 확인하지 못하면 새 텍스트를 유지하고 재전송하지 않는다.
+    /// timeout과 검증 불가는 성공을 뜻하지 않는다. 수신을 확인하지 못하면 새 텍스트를 유지한다.
     @MainActor
     @discardableResult
     static func insert(
@@ -101,6 +110,7 @@ enum TextInserter {
         prepare: () async -> Bool = { true },
         hasFocus: () -> Bool? = { true },
         targetValue: () -> String? = { nil },
+        targetIsTransient: () -> Bool = { false },
         onDiagnostic: (String) -> Void = { _ in },
         paste: () -> Bool,
         submit: (() -> Bool)? = nil
@@ -111,6 +121,7 @@ enum TextInserter {
             let summary: String
             switch result {
             case .inserted: summary = "수신 확인"
+            case .postedWithoutVerification: summary = "붙여넣기 전송됨 · 터미널 입력은 수신 검증 불가"
             case .notReady: summary = "게시 전 중단 · 텍스트 또는 활성화·포커스 확인 실패"
             case .clipboardChanged: summary = "클립보드 소유권 변경"
             case .writeFailed: summary = "클립보드 읽기·쓰기 검증 실패"
@@ -147,6 +158,7 @@ enum TextInserter {
         }
         guard !Task.isCancelled else { return report(.cancelled) }
         var before: String?
+        var transientInput = false
 
         // 소유권을 넘기기 전에 모든 표현을 materialize한다. 읽지 못한 표현이 있으면 손실 없이 중단한다.
         let originalCount = pasteboard.changeCount
@@ -186,13 +198,14 @@ enum TextInserter {
             }
             guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
             before = targetValue()
+            transientInput = targetIsTransient()
             let focus = hasFocus()
             if focus == false {
                 restore(savedItems, to: pasteboard, ifOwned: ownedCount)
                 return report(.notReady)
             }
             guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-            if focus == true, before != nil || ContinuousClock.now >= baselineDeadline { break }
+            if focus == true, transientInput || before != nil || ContinuousClock.now >= baselineDeadline { break }
             guard ContinuousClock.now < preparationDeadline else {
                 restore(savedItems, to: pasteboard, ifOwned: ownedCount)
                 return report(.notReady)
@@ -217,6 +230,9 @@ enum TextInserter {
                 return report(.unconfirmed, detail: "포커스 변경으로 수신 미확인")
             }
             guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+            // xterm은 입력을 PTY에 전달한 뒤 helper textarea를 비운다. 빈 AXValue를
+            // 기다려도 수신 증거가 생기지 않는다. 성공으로 간주하거나 Return을 보내지 않는다.
+            if focus == true, transientInput { return report(.postedWithoutVerification) }
             var focusUnavailable = focus == nil
             let after = focus == true ? targetValue() : nil
             if focus == true, received(text, before: before, after: after) {
@@ -239,7 +255,13 @@ enum TextInserter {
                 let baseline = before == nil ? "읽기 불가" : "읽기 가능"
                 let current = after == nil ? "읽기 불가" : "읽기 가능"
                 let focusDetail = focusUnavailable ? " · 포커스 조회 불가" : ""
-                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)\(focusDetail)")
+                let valueDetail: String
+                if let before, let after {
+                    valueDetail = " · 값 \(before == after ? "변경 없음" : "변경됨") · 길이 \(before.count)→\(after.count) · 전송 \(text.count)"
+                } else {
+                    valueDetail = ""
+                }
+                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)\(focusDetail)\(valueDetail)")
             }
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return report(.cancelled) }
@@ -251,6 +273,11 @@ enum TextInserter {
     static func received(_ text: String, before: String?, after: String?) -> Bool {
         guard let before, let after, before != after, !text.isEmpty else { return false }
         return after.components(separatedBy: text).count > before.components(separatedBy: text).count
+    }
+
+    /// 앱 이름이나 빈 값만으로 추정하지 않고, 실제 xterm 입력 요소만 분류한다.
+    static func isTransientInput(role: String?, domClasses: [String]) -> Bool {
+        role == kAXTextFieldRole && domClasses.contains("xterm-helper-textarea")
     }
 
     @MainActor
@@ -289,9 +316,14 @@ enum TextInserter {
     }
 
     private static func elementValue(_ focused: AXUIElement) -> String? {
+        elementAttribute(focused, kAXValueAttribute) as? String
+    }
+
+    /// 속성이 없거나 조회가 실패하면 nil을 반환한다. 사용자 텍스트를 로깅하지 않는다.
+    private static func elementAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &value) == .success
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
         else { return nil }
-        return value as? String
+        return value
     }
 }

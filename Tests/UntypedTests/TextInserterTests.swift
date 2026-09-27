@@ -128,6 +128,82 @@ struct TextInserterTests {
         #expect(!TextInserter.received("전체", before: nil, after: "전체"))
     }
 
+    @Test("xterm의 비워지는 입력값은 실패가 아닌 검증 불가로 기록한다")
+    func transientTerminalInputDoesNotReportTimeout() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var posts = 0
+        var submits = 0
+        var diagnostics: [String] = []
+        let result = await TextInserter.insert(
+            "터미널 입력", into: board, timeout: .milliseconds(20),
+            targetValue: { "" }, targetIsTransient: { true },
+            onDiagnostic: { diagnostics.append($0) },
+            paste: { posts += 1; return true }, submit: { submits += 1; return true }
+        )
+        #expect(result == .postedWithoutVerification)
+        #expect(posts == 1)
+        #expect(submits == 0)
+        #expect(board.string(forType: .string) == "터미널 입력")
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics[0].contains("검증 불가"))
+        #expect(!diagnostics[0].contains("확인 시간 초과"))
+    }
+
+    @Test("xterm의 숨은 입력 요소만 검증 불가로 분류한다")
+    func transientInputDetectionIsSpecific() {
+        #expect(TextInserter.isTransientInput(role: "AXTextField", domClasses: ["xterm-helper-textarea"]))
+        #expect(!TextInserter.isTransientInput(role: "AXTextField", domClasses: []))
+        #expect(!TextInserter.isTransientInput(role: "AXTextField", domClasses: ["terminal"]))
+        #expect(!TextInserter.isTransientInput(role: nil, domClasses: ["xterm-helper-textarea"]))
+        #expect(!TextInserter.isTransientInput(role: "AXGroup", domClasses: ["xterm-helper-textarea"]))
+    }
+
+    @Test("터미널에서도 게시 실패는 검증 불가로 숨기지 않는다")
+    func terminalPostFailurePreservesClipboard() async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        let result = await TextInserter.insert(
+            "터미널 입력", into: board, targetValue: { "" },
+            targetIsTransient: { true }, paste: { false }
+        )
+        #expect(result == .eventFailed)
+        #expect(board.string(forType: .string) == "원본")
+    }
+
+    @Test("터미널의 포커스·소유권 변경과 취소는 계속 보고한다", arguments: ["focus", "clipboard", "cancel"])
+    func terminalPostInterruptionsRemainVisible(scenario: String) async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var focused = true
+        var posted = false
+        let task = Task { @MainActor in
+            await TextInserter.insert(
+                "터미널 입력", into: board, hasFocus: { focused },
+                targetValue: { "" }, targetIsTransient: { true },
+                paste: {
+                    posted = true
+                    if scenario == "focus" { focused = false }
+                    if scenario == "clipboard" { board.clearContents(); board.setString("새 복사", forType: .string) }
+                    return true
+                }
+            )
+        }
+        // 취소 시나리오는 게시 전에 취소하여 키 이벤트가 발생하지 않아야 한다.
+        if scenario == "cancel" { task.cancel() }
+        let result = await task.value
+        if scenario == "cancel" {
+            #expect(result == .cancelled)
+            #expect(!posted)
+        } else if scenario == "clipboard" {
+            #expect(result == .clipboardChanged)
+            #expect(board.string(forType: .string) == "새 복사")
+        } else {
+            #expect(!focused)
+            #expect(result == .unconfirmed)
+        }
+    }
+
     @Test("Return은 전체 텍스트를 수신한 뒤 한 번만 보낸다")
     func submitFollowsReceipt() async {
         let board = makePasteboard()
