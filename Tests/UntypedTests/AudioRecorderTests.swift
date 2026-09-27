@@ -4,7 +4,7 @@ import AVFAudio
 import Speech
 @testable import Untyped
 
-private func int16Buffer(_ samples: [Int16]) -> AnalyzerInput {
+private func int16PCMBuffer(_ samples: [Int16]) -> AVAudioPCMBuffer {
     let buffer = AVAudioPCMBuffer(
         pcmFormat: AudioRecorder.format, frameCapacity: AVAudioFrameCount(samples.count)
     )!
@@ -12,7 +12,11 @@ private func int16Buffer(_ samples: [Int16]) -> AnalyzerInput {
     for (index, sample) in samples.enumerated() {
         buffer.int16ChannelData![0][index] = sample
     }
-    return AnalyzerInput(buffer: buffer)
+    return buffer
+}
+
+private func int16Buffer(_ samples: [Int16]) -> AnalyzerInput {
+    AnalyzerInput(buffer: int16PCMBuffer(samples))
 }
 
 private func readLE32(_ data: Data, at offset: Int) -> UInt32 {
@@ -74,15 +78,13 @@ private func readLE16(_ data: Data, at offset: Int) -> UInt16 {
 
 @Test func recorderIgnoresBuffersInAnotherFormat() async {
     // 헤더는 16 kHz mono Int16을 약속한다. 다른 포맷의 바이트가 섞이면 서버가 잡음을 듣는다.
+    // macOS 27의 AnalyzerInput은 Float32 버퍼를 받으면 트랩하므로 스트림을 거치지 않고 넣는다.
     let recorder = AudioRecorder()
-    let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-    await recorder.begin(inputSequence: stream)
     let float = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
     let buffer = AVAudioPCMBuffer(pcmFormat: float, frameCapacity: 4)!
     buffer.frameLength = 4
-    continuation.yield(AnalyzerInput(buffer: buffer))
-    continuation.yield(int16Buffer([7]))
-    continuation.finish()
+    await recorder.append(buffer)
+    await recorder.append(int16PCMBuffer([7]))
 
     let wav = await recorder.finish()
 

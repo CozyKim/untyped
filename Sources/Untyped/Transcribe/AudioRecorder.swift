@@ -26,7 +26,9 @@ actor AudioRecorder {
         }
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer) {
+    /// 테스트가 스트림 없이 부를 수 있게 private이 아니다 — macOS 27의 AnalyzerInput은
+    /// Int16이 아닌 버퍼를 받는 순간 트랩해, 포맷 거르기를 스트림으로는 검증할 수 없다.
+    func append(_ buffer: AVAudioPCMBuffer) {
         guard buffer.format.commonFormat == .pcmFormatInt16,
               buffer.format.channelCount == 1,
               let samples = buffer.int16ChannelData?[0]
