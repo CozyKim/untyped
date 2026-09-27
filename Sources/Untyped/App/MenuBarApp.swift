@@ -44,7 +44,6 @@ struct MenuBarApp: App {
         }
         .onChange(of: coordinator.state) { _, _ in }
         .onChange(of: coordinator.refinerAvailable) { _, _ in }
-        .commands { }
 
         Settings {
             SettingsView(coordinator: coordinator)
