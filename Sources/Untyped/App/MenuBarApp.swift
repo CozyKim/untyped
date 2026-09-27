@@ -3,7 +3,10 @@ import AppKit
 
 @main
 struct MenuBarApp: App {
-    @State private var coordinator = Coordinator(config: AppConfig.loadOrCreateDefault())
+    /// 앱 수명 동안 하나뿐이다. @State로 두면 macOS 27 SDK의 @State 매크로가 초기값을 지연
+    /// 평가해, init()에서 start()한 인스턴스와 body가 설정 창에 넘기는 인스턴스가 달라진다 —
+    /// 설정 저장이 받아쓰기를 처리하는 쪽에 닿지 않는다. App은 한 번만 만들어지므로 let이면 된다.
+    private let coordinator = Coordinator(config: AppConfig.loadOrCreateDefault())
     /// 설정 창을 열 때마다 값을 바꿔 SettingsView에 새 identity를 준다. macOS의
     /// Settings 씬은 창을 닫아도 파괴하지 않고 숨기기만 할 수 있어, identity가
     /// 그대로면 이전 초안과 에러 메시지가 다시 열었을 때 남아 있게 된다.
