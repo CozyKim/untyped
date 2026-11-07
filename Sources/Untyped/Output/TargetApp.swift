@@ -6,16 +6,15 @@ import ApplicationServices
 /// 텍스트가 어디서 왔는지(전사·다듬기)는 모른다. 붙여넣기 자체는 TextInserter에 맡긴다.
 enum TargetApp {
     enum SendResult: Equatable, Sendable {
-        case inserted
-        /// 터미널의 숨은 입력창에 게시했지만 수신 검증은 지원하지 않는다.
-        case postedWithoutVerification
+        /// 수신 검증 없이 이벤트 게시를 완료했다.
+        case posted
         /// 대상 앱이 실행 중이 아니다. 녹음을 시작한 뒤 사용자가 앱을 종료한 경우.
         case notRunning
         /// 활성화를 요청했지만 시간 안에 키보드 포커스가 넘어오지 않았다. 이때 ⌘V를 보내면
         /// 원래 앱에 들어가므로 삽입하지 않는다.
         case notBroughtToFront
-        /// 이벤트는 보냈지만 수신 여부를 확인하지 못했다. 재전송하면 중복될 수 있다.
-        case unconfirmed
+        /// 전송 도중 중단되거나 키 이벤트를 보내지 못했다.
+        case failed
     }
 
     /// 활성화 요청 뒤 대상 앱이 실제로 키 입력을 받기까지 기다리는 상한. frontmost 표시는
@@ -71,14 +70,13 @@ enum TargetApp {
             hasFocus: { keyboardFocusState(pid: target.processIdentifier) },
             onDiagnostic: onDiagnostic
         )
-        // Return의 게시와 소비도 별개다. 기존 복귀 여유는 유지하되, 붙여넣기 수신을
-        // 판단하거나 클립보드를 복원하는 근거로 쓰지 않는다.
-        if result == .inserted, pressReturn {
+        // Return도 대상 앱이 처리할 여유를 둔 뒤 원래 앱으로 돌아간다.
+        if result == .posted, pressReturn {
             do { try await Task.sleep(for: .milliseconds(200)) }
-            catch { return .inserted }
+            catch { return .posted }
         }
-        // 수신 확인 전에는 포커스를 빼앗지 않는다. 사용자가 다른 앱으로 옮겼어도 복귀를 강제하지 않는다.
-        if result == .inserted, hasKeyboardFocus(target),
+        // 전송 완료 후 복귀한다. 사용자가 다른 앱으로 옮겼으면 복귀를 강제하지 않는다.
+        if result == .posted, hasKeyboardFocus(target),
            let origin, origin != target, !origin.isTerminated {
             _ = origin.activate(options: [])
         }
@@ -87,10 +85,9 @@ enum TargetApp {
             _ = origin.activate(options: [])
         }
         switch result {
-        case .inserted: return .inserted
-        case .postedWithoutVerification: return .postedWithoutVerification
+        case .posted: return .posted
         case .notReady: return .notBroughtToFront
-        default: return .unconfirmed
+        default: return .failed
         }
     }
 

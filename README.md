@@ -36,7 +36,7 @@ right ⌥ down ──▶ mic (AVAudioEngine) ──▶ SpeechAnalyzer (on-device
                                   (4 rules + glossary + 8 few-shot pairs)
                                                    │ refined text   (timeout / error → raw)
                                                    ▼
-                                   clipboard ──▶ synthesized ⌘V ──▶ clipboard restored
+                                   clipboard ──▶ synthesized ⌘V ──▶ new text retained
 ```
 
 While the key is held, other apps' audio output is muted so it does not bleed into the mic.
@@ -158,9 +158,9 @@ STT : 어 내일 아침에 회의 자료를 보내드릴게요 아니 오늘 저
 결과: 오늘 저녁에 회의 자료를 보내드릴게요.
 ```
 
-The `입력:` line records the destination and insertion result in the same entry: confirmed receipt, timeout (whether the before/after accessibility values were readable), focus loss, clipboard ownership changes, pre-paste failure, or cancellation. Open it through Settings → **로그 파일 보기…**. Turning off dictation logging also disables these diagnostics.
+The `입력:` line records the destination and send result in the same entry. `전송 완료` means the paste event and any configured Return event were posted; the app does not check whether the recipient accepted the text. Permission, activation, pre-paste focus, clipboard ownership, key event failures, and cancellation are still reported. Open it through Settings → **로그 파일 보기…**. Turning off dictation logging also disables these diagnostics.
 
-The hidden input in xterm-based terminals such as Orca clears after forwarding input, so its accessibility value cannot confirm receipt. These inputs are logged as posted without verification, without the timeout warning or three-second wait. Dictated text remains on the clipboard; automatic Return and switching back to the original app are skipped. If automatic Return is enabled, a notice asks you to press it manually. Receipt verification for ordinary text fields is unchanged.
+Ordinary text fields and terminals/TUIs use the same send path, without receipt polling or timeout warnings. After pasting, the app allows 0.2 seconds for event handling before posting any configured Return. Send-to-app returns to the original app after sending. Dictated text stays on the clipboard so a delayed paste reads the new text. The original clipboard is restored only on a pre-paste failure; text is never resent automatically. Contextual partial edits are the explicit exception: they verify the exact expected field value before applying another range and restore the clipboard after confirmation.
 
 The header carries the recording length; the `소요:` line right under it says where the time after key-up went, per path. `apple`: `STT` is from key-up to the final on-device transcript, `다듬기` is the LLM refinement round trip (on a timeout or error, how long was waited before falling back). `llm_audio`: a single `오디오 다듬기` figure, because transcription and refinement are one request. The line is only present for dictations logged by this version — older entries keep their shape.
 
@@ -221,7 +221,7 @@ Sources/Untyped/
               OpenAICompatibleRefiner.swift   refine text, or refine audio in one request, on the same server
               RefinementPrompt.swift   4 rules + glossary + 8 few-shot pairs; text or audio as the final turn
               MultipartChatMessage.swift  chat message whose content is a string or `input_audio`/`text` parts
-  Output/     TextInserter.swift       clipboard backup → ⌘V → restore
+  Output/     TextInserter.swift       clipboard write → ⌘V → optional Return (restore only on pre-paste failure)
               TargetApp.swift          activate the configured app → TextInserter → return to the previous app
 ```
 

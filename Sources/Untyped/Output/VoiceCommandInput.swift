@@ -153,7 +153,7 @@ struct VoiceCommandInput {
                 case .inserted: return .completed
                 case .notReady, .writeFailed, .eventFailed: return .unavailable
                 case .cancelled: return posted ? .unconfirmed : .cancelled
-                case .unconfirmed, .postedWithoutVerification, .clipboardChanged: return .unconfirmed
+                case .unconfirmed, .posted, .clipboardChanged: return .unconfirmed
                 }
             },
             postReturn: {
