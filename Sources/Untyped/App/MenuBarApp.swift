@@ -11,6 +11,7 @@ struct MenuBarApp: App {
     /// Settings 씬은 창을 닫아도 파괴하지 않고 숨기기만 할 수 있어, identity가
     /// 그대로면 이전 초안과 에러 메시지가 다시 열었을 때 남아 있게 된다.
     @State private var settingsGeneration = 0
+    @State private var settingsWindow: NSWindow?
 
     var body: some Scene {
         MenuBarExtra {
@@ -40,7 +41,17 @@ struct MenuBarApp: App {
                 Text("다듬기 서버에 연결할 수 없음 — 원본 받아쓰기만 삽입됩니다")
             }
             Divider()
-            OpenSettingsButton { settingsGeneration += 1 }
+            OpenSettingsButton {
+                // 이미 열린 창의 미저장 초안을 메뉴를 다시 눌렀다는 이유로 초기화하지 않는다.
+                if let settingsWindow, settingsWindow.isVisible {
+                    DispatchQueue.main.async { [weak settingsWindow] in
+                        guard let settingsWindow, settingsWindow.isVisible else { return }
+                        bringSettingsWindowForward(settingsWindow)
+                    }
+                } else {
+                    settingsGeneration += 1
+                }
+            }
             Button("종료") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: iconName)
@@ -50,6 +61,7 @@ struct MenuBarApp: App {
 
         Settings {
             SettingsView(coordinator: coordinator)
+                .background(SettingsWindowFocus { settingsWindow = $0 })
                 .id(settingsGeneration)
         }
     }
@@ -85,7 +97,6 @@ struct MenuBarApp: App {
     }
 }
 
-/// LSUIElement 앱은 활성화 없이 설정 창을 열면 다른 앱 뒤에 가려질 수 있다.
 /// openSettings는 환경값이라 씬 안의 뷰에서만 읽을 수 있어 별도 뷰로 뺀다.
 private struct OpenSettingsButton: View {
     @Environment(\.openSettings) private var openSettings
@@ -94,8 +105,38 @@ private struct OpenSettingsButton: View {
     var body: some View {
         Button("설정…") {
             onOpen()
-            NSApp.activate()
             openSettings()
         }
     }
+}
+
+/// LSUIElement 앱은 창이 생기기 전에 activate()만 호출하면 다른 앱 뒤에 열릴 수 있다.
+/// 설정 콘텐츠가 실제 창에 붙은 뒤, 메뉴 처리가 끝나는 다음 메인 큐에서 앞으로 가져온다.
+/// settingsGeneration이 바뀔 때 함께 다시 만들어져 숨겨진 설정 창을 다시 열 때도 적용된다.
+private struct SettingsWindowFocus: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> FocusView { FocusView() }
+
+    func updateNSView(_ nsView: FocusView, context: Context) { nsView.onWindow = onWindow }
+
+    final class FocusView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                self.onWindow?(window)
+                bringSettingsWindowForward(window)
+            }
+        }
+    }
+}
+
+@MainActor
+private func bringSettingsWindowForward(_ window: NSWindow) {
+    NSApp.activate()
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
 }
