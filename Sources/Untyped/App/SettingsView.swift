@@ -18,6 +18,14 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("앱 정보") {
+                LabeledContent("버전", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "개발 빌드")
+                LabeledContent("커밋") {
+                    Text(Bundle.main.object(forInfoDictionaryKey: "UntypedGitCommit") as? String ?? "정보 없음")
+                        .monospaced()
+                }
+            }
+            .textSelection(.enabled)
             Section("다듬기 서버") {
                 TextField("서버 주소", text: $draft.baseURLText)
                 TextField("모델", text: $draft.config.model)

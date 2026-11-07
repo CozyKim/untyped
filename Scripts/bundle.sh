@@ -2,6 +2,11 @@
 set -euo pipefail
 ROOT="${0:A:h}/.."
 CONF="${1:-debug}"
+# Capture the source revision at build time; the installed app never needs Git.
+GIT_COMMIT="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || true)"
+if [[ -n "$GIT_COMMIT" && -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]]; then
+    GIT_COMMIT="$GIT_COMMIT-dirty"
+fi
 swift build -c "$CONF" --package-path "$ROOT"
 BIN="$(swift build -c "$CONF" --package-path "$ROOT" --show-bin-path)/Untyped"
 APP="$ROOT/build/Untyped.app"
@@ -9,6 +14,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Untyped"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+if [[ -n "$GIT_COMMIT" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :UntypedGitCommit string $GIT_COMMIT" "$APP/Contents/Info.plist"
+fi
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Use a named code signing identity to preserve Accessibility permission grants
