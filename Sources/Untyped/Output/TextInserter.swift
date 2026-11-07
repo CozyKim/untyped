@@ -107,6 +107,7 @@ enum TextInserter {
     static func insert(
         _ text: String, into pasteboard: NSPasteboard,
         timeout: Duration = pasteSettleTimeout,
+        expectedReplacement: (before: String, after: String)? = nil,
         prepare: () async -> Bool = { true },
         hasFocus: () -> Bool? = { true },
         targetValue: () -> String? = { nil },
@@ -142,7 +143,7 @@ enum TextInserter {
             }
             return nil
         }
-        guard !text.isEmpty else { return report(.notReady) }
+        guard !text.isEmpty || expectedReplacement != nil else { return report(.notReady) }
         // MainActor는 await 사이의 재진입을 막지 않는다. 대기자가 잠금을 얻은 뒤에만 활성화한다.
         while busy {
             do { try await Task.sleep(for: .milliseconds(10)) }
@@ -216,6 +217,10 @@ enum TextInserter {
                 return report(.cancelled)
             }
         }
+        if let expectedReplacement, !exactlyMatches(before, expectedReplacement.before) {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return report(.notReady)
+        }
         guard paste() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
             return report(.eventFailed)
@@ -235,7 +240,12 @@ enum TextInserter {
             if focus == true, transientInput { return report(.postedWithoutVerification) }
             var focusUnavailable = focus == nil
             let after = focus == true ? targetValue() : nil
-            if focus == true, received(text, before: before, after: after) {
+            let confirmed = if let expectedReplacement {
+                exactlyMatches(before, expectedReplacement.before) && exactlyMatches(after, expectedReplacement.after)
+            } else {
+                received(text, before: before, after: after)
+            }
+            if focus == true, confirmed {
                 let finalFocus = hasFocus()
                 if finalFocus == false {
                     return report(.unconfirmed, detail: "수신 관측 중 포커스 변경")
@@ -266,6 +276,17 @@ enum TextInserter {
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return report(.cancelled) }
         }
+    }
+
+    /// UTF-16 범위는 정규화로 길이가 달라질 수 있어 Swift의 정준 동등성 비교를 쓰지 않는다.
+    static func exactlyMatches(_ actual: String?, _ expected: String) -> Bool {
+        guard let actual else { return false }
+        return actual.utf16.elementsEqual(expected.utf16)
+    }
+
+    /// 선택 범위의 삭제는 빈 붙여넣기 대신 Delete 키로 처리한다. Return은 보내지 않는다.
+    static func postReplacement(deleting: Bool) -> Bool {
+        deleting ? postKey(51) : postKey(vKeyV, flags: .maskCommand)
     }
 
     /// 과거 내용이나 동일한 끝 20글자는 수신 증거가 아니다. 전체 텍스트가 새로 나타나야 한다.

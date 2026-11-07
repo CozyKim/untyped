@@ -106,6 +106,22 @@ struct OpenAICompatibleRefiner: TextRefiner, AudioRefiner {
         try await completionText(for: chatRequest(for: raw, maxTokens: maxTokens))
     }
 
+    func edit(_ text: String, instruction: String) async throws -> String {
+        let json = try await completionText(for: chatCompletionsRequest(
+            messages: VoiceEditPrompt.messages(text: text, instruction: instruction), maxTokens: maxTokens
+        ))
+        // 전체 재작성 응답은 받지 않는다. 원문 조각의 위치 검증은 Processor가 맡아
+        // '여러 곳에 일치함' 같은 구체적인 안내를 사용자에게 전달한다.
+        _ = try JSONDecoder().decode(VoiceEditPlan.Response.self, from: Data(json.utf8))
+        return json
+    }
+
+    func transcribe(wav: Data) async throws -> String {
+        try await completionText(for: chatCompletionsRequest(
+            messages: VoiceEditPrompt.audioMessages(wav: wav), maxTokens: maxTokens
+        ))
+    }
+
     /// 녹음 전체를 같은 프롬프트·예시 뒤에 붙여 한 요청으로 다듬는다. 출력 상한도 같다 —
     /// 결과가 그보다 길면 잘린 채 넣지 않고 실패로 처리해 사용자가 상한을 올리게 한다.
     func refine(wav: Data) async throws -> String {

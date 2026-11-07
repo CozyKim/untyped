@@ -100,7 +100,7 @@ enum TargetApp {
     /// 들어간다. 접근성 시스템이 보고하는 "키보드 포커스를 가진 앱"은 실제 포커스가 넘어간
     /// 뒤에 바뀌므로, frontmost와 이 값이 모두 대상 앱일 때까지 기다린다.
     @MainActor
-    private static func waitUntilKeyboardFocus(_ app: NSRunningApplication) async -> Bool {
+    static func waitUntilKeyboardFocus(_ app: NSRunningApplication) async -> Bool {
         let deadline = ContinuousClock.now + activationTimeout
         while ContinuousClock.now < deadline {
             // NSRunningApplication의 시간에 따라 변하는 속성은 메인 런 루프가 한 번 돌아야

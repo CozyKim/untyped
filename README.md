@@ -89,6 +89,30 @@ The menu-bar mic icon shows state: idle, listening, refining.
 
 A floating waveform appears at the bottom of the screen while listening and turns into a spinner while refining. With the two-step (Apple) backend, the words recognised so far appear under the waveform as you speak (last two lines) — a fast, tentative transcript that can differ from the final one; it disappears when you release the key and is never inserted or logged. The one-step (LLM audio) backend has no interim transcript, so nothing is shown there. If the raw transcript was inserted instead of a refined one, a notice explains why for 2.5 s — e.g. *다듬기 시간 초과 — 원본 삽입* (refinement timed out — raw inserted).
 
+### Voice editing and submission
+
+Use the existing recording shortcut to speak a command. **기본 단축키에서 음성 명령 구분** (recognize voice commands with the default shortcut) is enabled by default.
+
+- **“수정, 내일을 오늘로 바꿔”** edits “tomorrow” to “today” in the current input field, including previous dictation and manual edits. You can also request sentence edits or deletion.
+- **“보내”** posts Return once without inserting the command word. In a terminal this executes the current command.
+- Editing requires “수정” at the beginning followed by whitespace or punctuation. Submission requires the standalone word “보내”; ordinary prose containing these words stays dictation. Bare “수정” prompts you to include an instruction.
+
+The full field provides context to the model, which returns only exact original fragments and replacements. Untyped resolves unique anchors, trims unchanged surrounding text and pastes into the selected minimal ranges. Other characters are preserved locally. Missing, repeated or overlapping anchors are rejected before any mutation.
+
+Editing needs the refinement server and a field readable and selectable through Accessibility. Unsupported fields, password fields and xterm helper inputs are not edited; explicit submission can still post Return to a focused xterm input. Commands are pinned to the field at recording start and stop if focus or contents change. Failed or truncated edit requests leave the original text untouched. The target-app shortcut applies commands to its configured app.
+
+For a dictate → edit → send workflow, turn off automatic Return for both shortcuts. Those settings remain independent. Disable voice commands to dictate the command words literally. Apple STT-only mode can submit without an LLM, but editing still needs the configured server.
+
+With LLM audio and voice commands enabled, audio is first transcribed verbatim and ordinary dictation is then refined in a separate request. Disable voice commands to retain the original single-request audio path. Successful edit logs include the complete edited field; disabling dictation logging also disables command logs.
+
+### Configurable phrases and shortcut chords
+
+Settings → **음성 명령** has independent edit/submit toggles and one trigger phrase per line. Edit phrases match the beginning of speech; submit phrases match the whole utterance. Disable default-shortcut command recognition to dictate all speech as body text through the primary and target-app shortcuts.
+
+Settings → **전용 녹음 단축키** offers optional edit and literal-dictation recording keys, both unset initially. The edit key accepts instructions without an edit prefix and applies them to the current field; the literal key inserts even command words as body text and never automatically presses Return. Existing transcription/refinement settings still apply. There is no submit shortcut; use Enter.
+
+All four recording keys support a standalone modifier or a modifier/key chord (e.g. ⌘⇧E for edit and ⌘⇧D for literal dictation). Click **키 입력** and press the actual shortcut; a single modifier is captured on release with its left/right identity. Escape, Cancel or leaving Settings preserves the old value. Runtime recording shortcuts are suspended during capture and restored afterward. Click Save to persist the new binding. Chord key events are consumed, not typed into the focused app. Hold/tap-to-toggle works as with the existing key. Modifier-only combinations such as left Shift + right Command preserve each physical side and can coexist with contained standalone bindings; the more specific combination takes over a provisional held recording without starting a second microphone. Failed target-app promotions discard the provisional recording instead of inserting into the original field. Duplicate shortcuts and standalone-modifier/ordinary-key-chord overlaps are rejected: with a bare right Option binding, use chords without Option or change that bare binding to a chord. Ambiguous edit/submit phrases are also rejected. Saving during a recording affects the next recording, preserving the initiating key's release. Old modifier-string configuration remains compatible; chords are encoded as objects containing `key` and `modifiers`.
+
 ## Configuration
 
 Menu → **설정…** (Settings). Changes apply on **저장** (Save) without restarting. The file is `~/Library/Application Support/Untyped/config.json` (mode 0600 — it holds your API key).
@@ -110,6 +134,7 @@ Menu → **설정…** (Settings). Changes apply on **저장** (Save) without re
 | 기본 예시 포함 | `include_examples` | `true` | the 8 few-shot pairs; turn off for prompts of a different nature (e.g. translation) |
 | 단축키 | `hotkey` | `right_option` | one of left/right × `option`, `command`, `control`, `shift` |
 | 토글 녹음 | `toggle_enabled` | `true` | off = record only while held |
+| 음성으로 수정·보내기 | `voice_commands_enabled` | `true` | “수정, …” edits the field; standalone “보내” posts Return. Editing needs the refinement server |
 | 넣은 뒤 Return 누르기 | `press_return` | `false` | press Return after inserting (primary key) — sends the message in chat apps; in a terminal this runs the command |
 | 원본 삽입 때도 Return 누르기 | `press_return_on_fallback` | `false` | also press Return when the raw transcript was inserted (refinement failed); applies to both keys |
 | 앱으로 보내기 단축키 | `target_app_hotkey` | *(absent = off)* | second standalone modifier; must differ from `hotkey` |

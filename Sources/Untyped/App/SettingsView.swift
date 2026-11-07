@@ -97,12 +97,11 @@ struct SettingsView: View {
                 Text("Apple 음성 인식만 쓰면 서버 없이 동작하고 전사를 그대로 넣습니다. 다듬기 프롬프트와 \"원본 삽입 때도 Return 누르기\"는 영향을 주지 않습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("단축키", selection: $draft.hotkey) {
-                    ForEach(HotkeyKey.allCases, id: \.self) { key in
-                        Text(key.displayName).tag(key)
-                    }
-                }
-                Text("다른 앱의 단축키에 자주 쓰이는 키(왼쪽 ⌘ 등)를 고르면 그 조합키를 누를 때마다 녹음이 시작됩니다.")
+                ShortcutPicker(
+                    "기본 단축키", shortcut: Binding(get: { draft.hotkey }, set: { if let key = $0 { draft.hotkey = key } }),
+                    allowsNone: false, onBeginCapture: coordinator.beginShortcutCapture, onEndCapture: coordinator.endShortcutCapture
+                )
+                Text("‘키 입력’을 누른 뒤 원하는 단독 수식키나 조합키를 직접 눌러 지정합니다. 다른 앱이나 시스템 단축키와 겹치지 않게 골라 주세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("짧게 눌렀다 떼면 토글 녹음", isOn: $draft.toggleEnabled)
@@ -118,13 +117,42 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("앱으로 보내기") {
-                Picker("단축키", selection: $draft.targetAppHotkey) {
-                    Text("없음").tag(HotkeyKey?.none)
-                    ForEach(HotkeyKey.allCases, id: \.self) { key in
-                        Text(key.displayName).tag(HotkeyKey?.some(key))
-                    }
+            Section("음성 명령") {
+                Toggle("기본 단축키에서 음성 명령 구분", isOn: $draft.voiceCommandsEnabled)
+                Text("끄면 기본 단축키와 앱으로 보내기 단축키로 말한 내용은 모두 본문으로 입력합니다. 수정 전용 단축키는 별도로 사용할 수 있습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Group {
+                    Toggle("말로 수정하기", isOn: $draft.voiceCommandRules.editEnabled)
+                    Text("수정 명령어 — 한 줄에 하나").font(.caption)
+                    TextEditor(text: phraseBinding(\.editPhrases))
+                        .frame(height: 56)
+                        .accessibilityLabel("수정 명령어 — 한 줄에 하나")
+                        .disabled(!draft.voiceCommandRules.editEnabled)
+                    Text("예: ‘수정’, ‘고쳐’. 문장 첫머리에서 인식하고, 뒤에 말한 내용을 수정 지시로 사용합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("말로 전송하기", isOn: $draft.voiceCommandRules.submitEnabled)
+                    Text("전송 명령어 — 한 줄에 하나").font(.caption)
+                    TextEditor(text: phraseBinding(\.submitPhrases))
+                        .frame(height: 56)
+                        .accessibilityLabel("전송 명령어 — 한 줄에 하나")
+                        .disabled(!draft.voiceCommandRules.submitEnabled)
+                    Text("예: ‘보내’, ‘전송’. 명령어만 말했을 때 Enter를 누릅니다. 다른 말과 함께 나오면 본문으로 입력합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
+                .disabled(!draft.voiceCommandsEnabled)
+            }
+            Section("전용 녹음 단축키") {
+                ShortcutPicker("수정 전용", shortcut: $draft.editHotkey, onBeginCapture: coordinator.beginShortcutCapture, onEndCapture: coordinator.endShortcutCapture)
+                Text("현재 입력창을 고칩니다. ‘수정’ 같은 명령어 없이 ‘내일을 오늘로 바꿔’처럼 수정 내용만 말하세요. 전송하지 않습니다. 수정에는 다듬기 서버가 필요합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                ShortcutPicker("일반 받아쓰기 전용", shortcut: $draft.literalHotkey, onBeginCapture: coordinator.beginShortcutCapture, onEndCapture: coordinator.endShortcutCapture)
+                Text("‘수정’, ‘보내’도 본문으로 입력합니다. 선택한 전사·다듬기 방식은 유지하고, 넣은 뒤 자동 Return은 누르지 않습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("두 전용 단축키는 현재 입력창에 적용됩니다. 누르고 말하기와 짧게 눌러 토글하기는 기본 단축키와 같습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("앱으로 보내기") {
+                ShortcutPicker("단축키", shortcut: $draft.targetAppHotkey, onBeginCapture: coordinator.beginShortcutCapture, onEndCapture: coordinator.endShortcutCapture)
                 LabeledContent("대상 앱") {
                     HStack(spacing: 8) {
                         if let bundleID = draft.targetAppBundleID {
@@ -188,11 +216,18 @@ struct SettingsView: View {
                         }
                     }
                     Button("저장", action: save)
+                        .disabled(coordinator.shortcutCaptureActive)
                 }
             }
         }
         .formStyle(.grouped)
         .frame(width: 520)
+    }
+
+    private func phraseBinding(_ keyPath: WritableKeyPath<VoiceCommandRules, [String]>) -> Binding<String> {
+        Binding(get: { draft.voiceCommandRules[keyPath: keyPath].joined(separator: "\n") }, set: {
+            draft.voiceCommandRules[keyPath: keyPath] = $0.components(separatedBy: .newlines)
+        })
     }
 
     /// /Applications에서 .app을 고르게 한다. 파일에는 bundle ID만 저장하므로 여기서 읽어 둔다.
@@ -234,15 +269,14 @@ struct SettingsView: View {
             errorMessage = "프롬프트가 비어 있습니다"
             return
         }
-        if let targetAppHotkey = draft.targetAppHotkey {
-            guard targetAppHotkey != draft.hotkey else {
-                errorMessage = "앱으로 보내기 단축키는 받아쓰기 단축키와 달라야 합니다"
-                return
-            }
-            guard draft.targetAppBundleID != nil else {
-                errorMessage = "대상 앱을 선택하세요"
-                return
-            }
+        draft.voiceCommandRules = draft.voiceCommandRules.normalized
+        if let validationError = draft.inputValidationError {
+            errorMessage = validationError
+            return
+        }
+        if draft.targetAppHotkey != nil, draft.targetAppBundleID == nil {
+            errorMessage = "대상 앱을 선택하세요"
+            return
         }
         draft.systemPrompt = prompt == RefinementPrompt.defaultSystemPrompt ? nil : prompt
         do {

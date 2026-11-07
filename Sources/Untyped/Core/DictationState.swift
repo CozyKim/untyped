@@ -11,9 +11,9 @@ enum InsertDestination: Equatable, Sendable {
 enum DictationState: Equatable, Sendable {
     case idle
     /// 녹음 중. 어느 키로 시작했는지를 함께 기억해야 그 키만 이 녹음을 끝낼 수 있고,
-    /// 끝났을 때 어디에 넣을지 알 수 있다.
-    case holding(since: ContinuousClock.Instant, destination: InsertDestination)
-    case toggled(destination: InsertDestination)
+    /// 끝났을 때 어느 입력 방식과 대상을 사용할지 알 수 있다.
+    case holding(since: ContinuousClock.Instant, route: RecordingRoute)
+    case toggled(route: RecordingRoute)
     case processing
 
     /// 마이크가 켜져 있어야 하는 상태인지 — 키를 쥐고 있거나 토글로 녹음이 이어지는 동안.
@@ -34,7 +34,9 @@ enum TriggerEvent: Sendable {
 
 enum Effect: Equatable, Sendable {
     case startCapture
-    case stopCaptureAndProcess(InsertDestination)
+    case changeCaptureIntent
+    case discardCapture
+    case stopCaptureAndProcess(RecordingRoute)
     case none
 }
 
@@ -43,30 +45,35 @@ enum DictationTuning {
     static let holdThreshold: Duration = .milliseconds(250)
 }
 
-/// `destination`은 이 이벤트를 보낸 키다. 녹음 중인 상태의 destination과 다르면 다른 키의
+/// `route`는 이 이벤트를 보낸 키다. 녹음 중인 route와 다르면 다른 키의
 /// 이벤트이므로 무시한다 — 기본 키를 누른 채 앱으로 보내기 키를 떼도 홀드가 끝나지 않는다.
 func reduce(
     _ state: DictationState,
     _ event: TriggerEvent,
-    from destination: InsertDestination,
+    from route: RecordingRoute,
     now: ContinuousClock.Instant,
-    threshold: Duration
+    threshold: Duration,
+    promoting: Bool = false,
+    promotionAllowed: Bool = true
 ) -> (DictationState, Effect) {
     switch (state, event) {
     case (.idle, .keyDown):
-        return (.holding(since: now, destination: destination), .startCapture)
+        return (.holding(since: now, route: route), .startCapture)
     case (.idle, .keyUp):
         return (.idle, .none)
-    case (.holding(let start, let active), .keyUp) where active == destination:
+    case (.holding(let start, let active), .keyUp) where active == route:
         if now - start < threshold {
-            return (.toggled(destination: active), .none)
+            return (.toggled(route: active), .none)
         }
         return (.processing, .stopCaptureAndProcess(active))
     case (.holding, .keyUp):
         return (state, .none)
+    case (.holding(_, let active), .keyDown) where promoting && active != route:
+        guard promotionAllowed else { return (.processing, .discardCapture) }
+        return (.holding(since: now, route: route), .changeCaptureIntent)
     case (.holding, .keyDown):
         return (state, .none)
-    case (.toggled(let active), .keyDown) where active == destination:
+    case (.toggled(let active), .keyDown) where active == route:
         return (.processing, .stopCaptureAndProcess(active))
     case (.toggled, .keyDown):
         return (state, .none)
