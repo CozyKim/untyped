@@ -7,7 +7,7 @@ private let th = Duration.milliseconds(250)
 
 @Test func idleKeyDownStartsHolding() {
     let (s, e) = reduce(.idle, .keyDown, from: .frontmost, now: t0, threshold: th)
-    #expect(s == .holding(since: t0, destination: .frontmost))
+    #expect(s == .holding(since: t0, route: .frontmost))
     #expect(e == .startCapture)
 }
 
@@ -20,16 +20,16 @@ private let th = Duration.milliseconds(250)
 @Test func shortPressEntersToggled() {
     let now = t0.advanced(by: .milliseconds(249))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .frontmost), .keyUp, from: .frontmost, now: now, threshold: th
+        .holding(since: t0, route: .frontmost), .keyUp, from: .frontmost, now: now, threshold: th
     )
-    #expect(s == .toggled(destination: .frontmost))
+    #expect(s == .toggled(route: .frontmost))
     #expect(e == .none)
 }
 
 @Test func longPressStopsImmediately() {
     let now = t0.advanced(by: .milliseconds(250))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .frontmost), .keyUp, from: .frontmost, now: now, threshold: th
+        .holding(since: t0, route: .frontmost), .keyUp, from: .frontmost, now: now, threshold: th
     )
     #expect(s == .processing)
     #expect(e == .stopCaptureAndProcess(.frontmost))
@@ -37,27 +37,27 @@ private let th = Duration.milliseconds(250)
 
 @Test func holdingIgnoresRepeatedKeyDown() {
     let (s, e) = reduce(
-        .holding(since: t0, destination: .frontmost), .keyDown, from: .frontmost,
+        .holding(since: t0, route: .frontmost), .keyDown, from: .frontmost,
         now: t0.advanced(by: .seconds(1)), threshold: th
     )
-    #expect(s == .holding(since: t0, destination: .frontmost))
+    #expect(s == .holding(since: t0, route: .frontmost))
     #expect(e == .none)
 }
 
 @Test func toggledKeyDownStops() {
-    let (s, e) = reduce(.toggled(destination: .frontmost), .keyDown, from: .frontmost, now: t0, threshold: th)
+    let (s, e) = reduce(.toggled(route: .frontmost), .keyDown, from: .frontmost, now: t0, threshold: th)
     #expect(s == .processing)
     #expect(e == .stopCaptureAndProcess(.frontmost))
 }
 
 @Test func toggledIgnoresKeyUp() {
-    let (s, e) = reduce(.toggled(destination: .frontmost), .keyUp, from: .frontmost, now: t0, threshold: th)
-    #expect(s == .toggled(destination: .frontmost))
+    let (s, e) = reduce(.toggled(route: .frontmost), .keyUp, from: .frontmost, now: t0, threshold: th)
+    #expect(s == .toggled(route: .frontmost))
     #expect(e == .none)
 }
 
-@Test(arguments: [TriggerEvent.keyDown, TriggerEvent.keyUp], [InsertDestination.frontmost, .targetApp])
-func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestination) {
+@Test(arguments: [TriggerEvent.keyDown, TriggerEvent.keyUp], RecordingRoute.allCases)
+func processingIgnoresEverything(event: TriggerEvent, destination: RecordingRoute) {
     let (s, e) = reduce(.processing, event, from: destination, now: t0, threshold: th)
     #expect(s == .processing)
     #expect(e == .none)
@@ -67,7 +67,7 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
     // 토글 녹음을 끈 설정은 threshold 0으로 표현된다. 249ms 탭도 즉시 처리로 넘어간다.
     let now = t0.advanced(by: .milliseconds(249))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .frontmost), .keyUp, from: .frontmost, now: now, threshold: .zero
+        .holding(since: t0, route: .frontmost), .keyUp, from: .frontmost, now: now, threshold: .zero
     )
     #expect(s == .processing)
     #expect(e == .stopCaptureAndProcess(.frontmost))
@@ -77,14 +77,14 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
 
 @Test func targetAppKeyDownStartsHoldingForTargetApp() {
     let (s, e) = reduce(.idle, .keyDown, from: .targetApp, now: t0, threshold: th)
-    #expect(s == .holding(since: t0, destination: .targetApp))
+    #expect(s == .holding(since: t0, route: .targetApp))
     #expect(e == .startCapture)
 }
 
 @Test func targetAppLongPressProcessesForTargetApp() {
     let now = t0.advanced(by: .milliseconds(300))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .targetApp), .keyUp, from: .targetApp, now: now, threshold: th
+        .holding(since: t0, route: .targetApp), .keyUp, from: .targetApp, now: now, threshold: th
     )
     #expect(s == .processing)
     #expect(e == .stopCaptureAndProcess(.targetApp))
@@ -93,9 +93,9 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
 @Test func targetAppShortPressKeepsDestinationInToggled() {
     let now = t0.advanced(by: .milliseconds(100))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .targetApp), .keyUp, from: .targetApp, now: now, threshold: th
+        .holding(since: t0, route: .targetApp), .keyUp, from: .targetApp, now: now, threshold: th
     )
-    #expect(s == .toggled(destination: .targetApp))
+    #expect(s == .toggled(route: .targetApp))
     #expect(e == .none)
 }
 
@@ -103,20 +103,20 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
     // 기본 키로 녹음 중에 앱으로 보내기 키를 눌렀다 떼도 녹음은 계속된다.
     let now = t0.advanced(by: .seconds(1))
     let (s, e) = reduce(
-        .holding(since: t0, destination: .frontmost), .keyUp, from: .targetApp, now: now, threshold: th
+        .holding(since: t0, route: .frontmost), .keyUp, from: .targetApp, now: now, threshold: th
     )
-    #expect(s == .holding(since: t0, destination: .frontmost))
+    #expect(s == .holding(since: t0, route: .frontmost))
     #expect(e == .none)
 }
 
 @Test func otherKeyPressDoesNotStopToggled() {
-    let (s, e) = reduce(.toggled(destination: .targetApp), .keyDown, from: .frontmost, now: t0, threshold: th)
-    #expect(s == .toggled(destination: .targetApp))
+    let (s, e) = reduce(.toggled(route: .targetApp), .keyDown, from: .frontmost, now: t0, threshold: th)
+    #expect(s == .toggled(route: .targetApp))
     #expect(e == .none)
 }
 
 @Test func toggledStopsOnlyByStartingKey() {
-    let (s, e) = reduce(.toggled(destination: .targetApp), .keyDown, from: .targetApp, now: t0, threshold: th)
+    let (s, e) = reduce(.toggled(route: .targetApp), .keyDown, from: .targetApp, now: t0, threshold: th)
     #expect(s == .processing)
     #expect(e == .stopCaptureAndProcess(.targetApp))
 }
@@ -142,12 +142,12 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
     let (up, _) = reduce(
         down, .keyUp, from: .frontmost, now: t0.advanced(by: .milliseconds(80)), threshold: th
     )
-    #expect(up == .toggled(destination: .frontmost))
+    #expect(up == .toggled(route: .frontmost))
     #expect(up.isListening)
 }
 
 @Test func holdingIsListeningAndIdleIsNot() {
-    #expect(DictationState.holding(since: t0, destination: .targetApp).isListening)
+    #expect(DictationState.holding(since: t0, route: .targetApp).isListening)
     #expect(!DictationState.idle.isListening)
 }
 
@@ -156,11 +156,11 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
 // 시작된 뒤 늦게 도착할 수도 있다.
 
 @Test func previewFromCurrentSessionIsAcceptedWhileHolding() {
-    #expect(acceptsPreview(from: 3, current: 3, state: .holding(since: t0, destination: .frontmost)))
+    #expect(acceptsPreview(from: 3, current: 3, state: .holding(since: t0, route: .frontmost)))
 }
 
 @Test func previewFromCurrentSessionIsAcceptedWhileToggled() {
-    #expect(acceptsPreview(from: 3, current: 3, state: .toggled(destination: .targetApp)))
+    #expect(acceptsPreview(from: 3, current: 3, state: .toggled(route: .targetApp)))
 }
 
 @Test func previewIsDroppedOnceProcessing() {
@@ -174,5 +174,5 @@ func processingIgnoresEverything(event: TriggerEvent, destination: InsertDestina
 
 @Test func previewFromEarlierSessionIsDropped() {
     // 다음 녹음이 이미 시작됐다. 이전 녹음의 늦은 결과가 새 녹음의 미리보기를 덮으면 안 된다.
-    #expect(!acceptsPreview(from: 2, current: 3, state: .holding(since: t0, destination: .frontmost)))
+    #expect(!acceptsPreview(from: 2, current: 3, state: .holding(since: t0, route: .frontmost)))
 }

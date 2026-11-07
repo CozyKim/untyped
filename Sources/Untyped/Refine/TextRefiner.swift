@@ -24,6 +24,7 @@ extension TextRefiner {
 /// 입력을 받는 LLM이 한 번에 한다. 마이크도 포맷 변환도 모른다 — 완성된 파일 바이트만 받는다.
 protocol AudioRefiner: Sendable {
     func refine(wav: Data) async throws -> String
+    func transcribe(wav: Data) async throws -> String
 }
 
 /// 녹음 길이에 비례하는 타임아웃. 고정값만 쓰면 긴 발화가 항상 폴백된다.

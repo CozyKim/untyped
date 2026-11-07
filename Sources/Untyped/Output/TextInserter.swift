@@ -1,10 +1,13 @@
 import AppKit
 import ApplicationServices
 
-/// 앱 종류와 관계없이 키 이벤트 게시를 전송 완료로 처리한다. 수신 값은 조회하지 않는다.
+/// 일반 삽입은 키 이벤트 게시를 완료로 처리한다. 명시적인 부분 치환만 기대 결과를 확인한다.
 enum TextInserter {
     enum Result: Equatable, Sendable {
         case posted
+        /// 명시적인 부분 치환의 결과를 입력창에서 확인했다.
+        case inserted
+        case unconfirmed
         case notReady
         case clipboardChanged
         case writeFailed
@@ -86,16 +89,18 @@ enum TextInserter {
         )
     }
 
-    /// 게시 전 실패만 원래 클립보드를 복원한다. 게시 뒤에는 대상 앱의 늦은 읽기를 위해
-    /// 보낸 문자열을 남긴다. 이벤트 게시를 신뢰하며 수신 확인이나 자동 재전송은 하지 않는다.
+    /// 일반 삽입은 게시 전 실패에만 원래 클립보드를 복원하고 게시 뒤에는 새 문자열을 남긴다.
+    /// expectedReplacement가 있는 부분 수정만 정확한 결과를 확인한 뒤 복원한다. 자동 재전송은 없다.
     @MainActor
     @discardableResult
     static func insert(
         _ text: String, into pasteboard: NSPasteboard,
         timeout: Duration = focusTimeout,
         settleDelay: Duration = pasteSettleDelay,
+        expectedReplacement: (before: String, after: String)? = nil,
         prepare: () async -> Bool = { true },
         hasFocus: () -> Bool? = { true },
+        targetValue: () -> String? = { nil },
         onDiagnostic: (String) -> Void = { _ in },
         paste: () -> Bool,
         submit: (() -> Bool)? = nil
@@ -105,6 +110,8 @@ enum TextInserter {
             let summary: String
             switch result {
             case .posted: summary = "전송 완료"
+            case .inserted: summary = "부분 수정 확인"
+            case .unconfirmed: summary = "부분 수정 결과 확인 안 됨"
             case .notReady: summary = "게시 전 중단 · 텍스트 또는 활성화·포커스 확인 실패"
             case .clipboardChanged: summary = "클립보드 소유권 변경"
             case .writeFailed: summary = "클립보드 읽기·쓰기 검증 실패"
@@ -124,7 +131,7 @@ enum TextInserter {
             }
             return nil
         }
-        guard !text.isEmpty else { return report(.notReady) }
+        guard !text.isEmpty || expectedReplacement != nil else { return report(.notReady) }
         while busy {
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return report(.cancelled) }
@@ -168,11 +175,35 @@ enum TextInserter {
             return report(Task.isCancelled ? .cancelled : .notReady)
         }
         guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+        if let expectedReplacement, !exactlyMatches(targetValue(), expectedReplacement.before) {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return report(.notReady)
+        }
         guard paste() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
             return report(.eventFailed)
         }
         posted = true
+
+        // 부분 수정은 다음 패치의 UTF-16 범위와 클립보드 복원에 정확한 결과가 필요하다.
+        // 이 분기는 expectedReplacement를 명시한 편집 경로에서만 실행한다.
+        if let expectedReplacement {
+            let deadline = ContinuousClock.now + timeout
+            while true {
+                guard !Task.isCancelled else { return report(.cancelled) }
+                let focus = hasFocus()
+                guard focus != false else { return report(.unconfirmed, detail: "부분 수정 중 포커스 변경") }
+                guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+                if focus == true, exactlyMatches(targetValue(), expectedReplacement.after), hasFocus() == true {
+                    guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+                    restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+                    return report(.inserted)
+                }
+                guard ContinuousClock.now < deadline else { return report(.unconfirmed) }
+                do { try await Task.sleep(for: .milliseconds(10)) }
+                catch { return report(.cancelled) }
+            }
+        }
 
         // ⌘V와 Return의 순서 및 대상 앱 복귀를 위한 여유만 둔다. AXValue는 읽지 않는다.
         do { try await Task.sleep(for: settleDelay) }
@@ -188,6 +219,19 @@ enum TextInserter {
             }
         }
         return report(.posted)
+    }
+
+    static func exactlyMatches(_ actual: String?, _ expected: String) -> Bool {
+        guard let actual else { return false }
+        return actual.utf16.elementsEqual(expected.utf16)
+    }
+
+    static func postReplacement(deleting: Bool) -> Bool {
+        deleting ? postKey(51) : postKey(vKeyV, flags: .maskCommand)
+    }
+
+    static func isTransientInput(role: String?, domClasses: [String]) -> Bool {
+        role == kAXTextFieldRole && domClasses.contains("xterm-helper-textarea")
     }
 
     @MainActor

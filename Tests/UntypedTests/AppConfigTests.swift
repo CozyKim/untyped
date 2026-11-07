@@ -25,7 +25,7 @@ private func temporaryFileURL() -> URL {
     let data = try JSONEncoder().encode(sample)
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     #expect(Set(object.keys) == [
-        "base_url", "model", "api_key", "hotkey", "toggle_enabled", "include_examples",
+        "base_url", "model", "api_key", "hotkey", "toggle_enabled", "voice_commands_enabled", "voice_command_rules", "include_examples",
         "max_tokens", "log_enabled", "refine_timeout_seconds",
         "press_return", "target_app_press_return", "press_return_on_fallback",
         "transcription_backend", "warm_up_enabled", "keep_alive_enabled", "keep_alive_interval_minutes",

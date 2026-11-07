@@ -27,8 +27,13 @@ struct AppConfig: Codable, Equatable, Sendable {
     var baseURL: URL
     var model: String
     var apiKey: String
-    var hotkey: HotkeyKey
+    var hotkey: KeyboardShortcut
     var toggleEnabled: Bool
+    /// 이전에 입력한 내용을 편집하거나 명시적으로 Return을 누르는 음성 명령.
+    var voiceCommandsEnabled: Bool = true
+    var voiceCommandRules = VoiceCommandRules()
+    var editHotkey: KeyboardShortcut? = nil
+    var literalHotkey: KeyboardShortcut? = nil
     /// nil이면 앱의 기본 프롬프트를 쓴다. 기본값과 같은 텍스트는 저장하지 않는다 —
     /// 파일에 박아 두면 나중에 기본 프롬프트가 개선돼도 한 번도 손대지 않은 사용자가
     /// 옛 프롬프트에 묶인다.
@@ -44,7 +49,7 @@ struct AppConfig: Codable, Equatable, Sendable {
     var refineTimeoutSeconds: Int = 4
     /// 앱으로 보내기 단축키. nil이면 기능이 꺼진다. 기본 단축키와 같은 키는 디코딩 시
     /// nil로 읽는다 — 같은 키에 모니터 두 개가 붙으면 한 번의 눌림이 두 이벤트로 들어온다.
-    var targetAppHotkey: HotkeyKey? = nil
+    var targetAppHotkey: KeyboardShortcut? = nil
     /// 앱으로 보내기의 대상 앱 bundle ID. 이름·아이콘은 저장하지 않고 표시할 때마다
     /// bundle ID로 조회한다 — 앱이 이름을 바꾸거나 삭제돼도 파일이 낡지 않는다.
     var targetAppBundleID: String? = nil
@@ -75,6 +80,10 @@ struct AppConfig: Codable, Equatable, Sendable {
         case apiKey = "api_key"
         case hotkey
         case toggleEnabled = "toggle_enabled"
+        case voiceCommandsEnabled = "voice_commands_enabled"
+        case voiceCommandRules = "voice_command_rules"
+        case editHotkey = "edit_hotkey"
+        case literalHotkey = "literal_hotkey"
         case systemPrompt = "system_prompt"
         case includeExamples = "include_examples"
         case maxTokens = "max_tokens"
@@ -158,6 +167,35 @@ struct AppConfig: Codable, Equatable, Sendable {
 }
 
 extension AppConfig {
+    private var configuredRecordingShortcuts: [(RecordingRoute, KeyboardShortcut)] {
+        var result: [(RecordingRoute, KeyboardShortcut)] = [(.frontmost, hotkey)]
+        if let targetAppHotkey { result.append((.targetApp, targetAppHotkey)) }
+        if let editHotkey { result.append((.edit, editHotkey)) }
+        if let literalHotkey { result.append((.literal, literalHotkey)) }
+        return result
+    }
+
+    /// 직접 편집한 설정에서도 중복된 이벤트 모니터를 설치하지 않는다.
+    var recordingShortcuts: [RecordingRoute: KeyboardShortcut] {
+        var result: [RecordingRoute: KeyboardShortcut] = [:]
+        for (route, key) in configuredRecordingShortcuts where key.isValid {
+            if !result.values.contains(where: { key.conflicts(with: $0) }) { result[route] = key }
+        }
+        return result
+    }
+
+    var inputValidationError: String? {
+        if voiceCommandsEnabled, let error = voiceCommandRules.validationError { return error }
+        let bindings = configuredRecordingShortcuts
+        for (index, (route, key)) in bindings.enumerated() {
+            guard key.isValid else { return "\(route.displayName): 조합키에는 수식키와 일반 키를 지정하세요" }
+            for (otherRoute, otherKey) in bindings.prefix(index) where key.conflicts(with: otherKey) {
+                return "\(otherRoute.displayName)와 \(route.displayName) 단축키가 겹칩니다. 단독 수식키를 조합키에 함께 쓰는 경우도 구분해 주세요."
+            }
+        }
+        return nil
+    }
+
     /// base_url·model·api_key 뒤에 추가된 필드들은 기존 파일에 없을 수 있다.
     /// hotkey가 모르는 문자열이어도 기본값으로 읽는다 — 이 필드 하나 때문에 파일
     /// 전체가 거부되어 API 키까지 기본값으로 대체되면 안 된다.
@@ -168,11 +206,13 @@ extension AppConfig {
         baseURL = try container.decode(URL.self, forKey: .baseURL)
         model = try container.decode(String.self, forKey: .model)
         apiKey = try container.decode(String.self, forKey: .apiKey)
-        let rawHotkey = try container.decodeIfPresent(String.self, forKey: .hotkey)
-        hotkey = rawHotkey.flatMap(HotkeyKey.init(rawValue:)) ?? Self.defaultConfig.hotkey
+        hotkey = (try? container.decodeIfPresent(KeyboardShortcut.self, forKey: .hotkey)) ?? Self.defaultConfig.hotkey
         toggleEnabled = try container.decodeIfPresent(Bool.self, forKey: .toggleEnabled)
             ?? Self.defaultConfig.toggleEnabled
         systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        voiceCommandsEnabled = try container.decodeIfPresent(Bool.self, forKey: .voiceCommandsEnabled)
+            ?? Self.defaultConfig.voiceCommandsEnabled
+        voiceCommandRules = (try? container.decodeIfPresent(VoiceCommandRules.self, forKey: .voiceCommandRules)) ?? .init()
         includeExamples = try container.decodeIfPresent(Bool.self, forKey: .includeExamples)
             ?? Self.defaultConfig.includeExamples
         maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
@@ -181,9 +221,16 @@ extension AppConfig {
             ?? Self.defaultConfig.logEnabled
         refineTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .refineTimeoutSeconds)
             ?? Self.defaultConfig.refineTimeoutSeconds
-        let rawTargetAppHotkey = try container.decodeIfPresent(String.self, forKey: .targetAppHotkey)
-        let decodedTargetAppHotkey = rawTargetAppHotkey.flatMap(HotkeyKey.init(rawValue:))
-        targetAppHotkey = decodedTargetAppHotkey == hotkey ? nil : decodedTargetAppHotkey
+        targetAppHotkey = try? container.decodeIfPresent(KeyboardShortcut.self, forKey: .targetAppHotkey)
+        if targetAppHotkey?.conflicts(with: hotkey) == true { targetAppHotkey = nil }
+        editHotkey = try? container.decodeIfPresent(KeyboardShortcut.self, forKey: .editHotkey)
+        if let key = editHotkey, [hotkey, targetAppHotkey].compactMap({ $0 }).contains(where: { key.conflicts(with: $0) }) {
+            editHotkey = nil
+        }
+        literalHotkey = try? container.decodeIfPresent(KeyboardShortcut.self, forKey: .literalHotkey)
+        if let key = literalHotkey, [hotkey, targetAppHotkey, editHotkey].compactMap({ $0 }).contains(where: { key.conflicts(with: $0) }) {
+            literalHotkey = nil
+        }
         let rawTargetAppBundleID = try container.decodeIfPresent(String.self, forKey: .targetAppBundleID)
         targetAppBundleID = (rawTargetAppBundleID?.isEmpty ?? true) ? nil : rawTargetAppBundleID
         pressReturn = try container.decodeIfPresent(Bool.self, forKey: .pressReturn)

@@ -1,0 +1,11 @@
+# Contextual partial voice edits
+
+The user requests reading the full input context and completing only the requested parts. This replaces the earlier full-field rewrite. Keep the existing worktree, shortcuts, command routing, focus/content guards and explicit submission.
+
+Approach: the model returns JSON `{"edits":[{"old":"exact original fragment","new":"replacement"}]}`. Each old fragment must occur exactly once in the snapshot; include unchanged neighboring text to identify repeated words. The application resolves all fragments before writing, rejects overlap or missing/ambiguous anchors, strips shared prefix/suffix from each edit and preserves every other character in code. Empty new strings delete fragments; insertions include an existing neighboring anchor. An empty edits list leaves the field unchanged.
+
+The full-rewrite alternative permits unintended changes outside a requested fragment. Numeric offsets are fragile for LLMs and Unicode. Exact textual anchors plus locally computed UTF-16 ranges fit the existing macOS Accessibility boundary.
+
+Only AXSelectedTextRange is set; the replacement is pasted into that selection (or Delete is posted for an empty replacement). The macOS SDK declares AXSelectedText read-only, so no selected-text setter is used. Reuse the serialized clipboard transaction and confirm the exact expected full result before restoring the clipboard. Content guards compare exact UTF-16 sequences, not canonically equivalent Swift strings. Do not fall back to setting AXValue or replacing the whole field. Unsupported selection/replacement produces a notice. Validate all edits before the first mutation; apply disjoint ranges from end to start, recheck focus and expected content before each edit, and verify after each write. If an app fails midway, report unconfirmed partial application and do not retry automatically. Structured patches constrain changes; semantic interpretation of the instruction still comes from the local model.
+
+Verification: exact surrounding text/whitespace/emoji preservation; ambiguous, overlapping and missing anchors; malformed and truncated responses; real range writes rather than full-field writes; content/focus changes before and between patches; ordinary dictation/submission regressions. Build, full suite, reviewer check, repackage and relaunch the worktree app as already authorized.

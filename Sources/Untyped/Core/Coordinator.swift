@@ -1,4 +1,5 @@
 import AVFAudio
+import AppKit
 import Foundation
 import Observation
 
@@ -20,9 +21,11 @@ final class Coordinator {
     private var refiner: any TextRefiner
     /// 오디오를 한 요청으로 다듬는 쪽. 텍스트 다듬기와 같은 서버 클라이언트다.
     private var audioRefiner: any AudioRefiner
-    private var hotkey: HotkeyMonitor?
-    /// 앱으로 보내기 단축키. 설정에 없으면 nil.
-    private var targetAppHotkey: HotkeyMonitor?
+    private var hotkeyMonitors: [RecordingRoute: HotkeyMonitor] = [:]
+    private var installedShortcuts: [RecordingRoute: KeyboardShortcut] = [:]
+    private var started = false
+    private var hotkeyRefreshPending = false
+    private(set) var shortcutCaptureActive = false
     private var availabilityPoll: Task<Void, Never>?
     /// 설정이 켜져 있으면 주기적으로 모델을 건드려 서버의 유휴 TTL을 새로 시작한다.
     private let keepAlive = KeepAlive()
@@ -33,6 +36,11 @@ final class Coordinator {
     /// 이번 녹음이 시작될 때의 전사 방식. Apple 두 경로(다듬기 있음·없음)는 싱크가 같아 어느 싱크가
     /// 살아 있는지만으로는 가릴 수 없고, 녹음 중에 설정이 바뀌어도 이 녹음은 시작한 쪽을 따라야 한다.
     private var captureBackend: TranscriptionBackend = .apple
+    private var capturePolicy = RecordingPolicy(route: .frontmost, commandsEnabled: true, rules: .init())
+    private var commandInput: VoiceCommandInput?
+    private var commandOrigin: NSRunningApplication?
+    private var commandOriginHasFocus: (() -> Bool)?
+    private var commandTarget: NSRunningApplication?
     private let muter = SystemAudioMuter()
     /// beginCapture()를 감싼 핸들. 짧게 눌렀다 떼면 setup이 끝나기 전에
     /// finishAndInsert()가 먼저 시작될 수 있어, 그 가드가 "설정 실패"가 아니라
@@ -58,33 +66,56 @@ final class Coordinator {
     }
 
     func start() {
-        hotkey = makeMonitor(config.hotkey, destination: .frontmost)
-        targetAppHotkey = config.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
+        guard !started else { return }
+        started = true
+        rebuildHotkeys()
         restartAvailabilityPoll()
         restartKeepAlive()
     }
 
-    /// 저장된 새 설정을 즉시 반영한다. 재시작이 필요 없다.
+    /// 녹음 중에는 기존 키의 뗌을 유지하고 완료 후 새 단축키를 설치한다.
     func apply(_ newConfig: AppConfig) {
         let previous = config
         config = newConfig
         let client = Self.makeClient(newConfig)
         refiner = client
         audioRefiner = client
-        // 키가 같으면 모니터를 그대로 둔다 — 교체하면 진행 중인 hold의 뗌을 놓친다.
-        // start() 전이면(hotkey == nil) start()가 config로 설치하므로 여기서 만들지 않는다.
-        if hotkey != nil {
-            if newConfig.hotkey != previous.hotkey {
-                hotkey?.stop()
-                hotkey = makeMonitor(newConfig.hotkey, destination: .frontmost)
-            }
-            if newConfig.targetAppHotkey != previous.targetAppHotkey {
-                targetAppHotkey?.stop()
-                targetAppHotkey = newConfig.targetAppHotkey.map { makeMonitor($0, destination: .targetApp) }
-            }
+        if started, previous.recordingShortcuts != newConfig.recordingShortcuts || hotkeyMonitors.values.contains(where: { !$0.isInstalled }) {
+            if state == .idle { rebuildHotkeys() }
+            else { hotkeyRefreshPending = true }
         }
         restartAvailabilityPoll()
         restartKeepAlive()
+    }
+
+    private func rebuildHotkeys() {
+        guard !shortcutCaptureActive else { hotkeyRefreshPending = true; return }
+        for monitor in hotkeyMonitors.values { monitor.stop() }
+        hotkeyMonitors.removeAll()
+        installedShortcuts = config.recordingShortcuts
+        for (route, key) in installedShortcuts {
+            let monitor = HotkeyMonitor(key: key, onFailure: { [weak self] message in
+                self?.overlay.showNotice(message)
+            }) { [weak self] event in
+                self?.handle(event, from: route)
+            }
+            hotkeyMonitors[route] = monitor
+            monitor.start()
+        }
+        hotkeyRefreshPending = false
+    }
+
+    func beginShortcutCapture() -> Bool {
+        guard state == .idle, !shortcutCaptureActive else { return false }
+        shortcutCaptureActive = true
+        for monitor in hotkeyMonitors.values { monitor.stop() }
+        return true
+    }
+
+    func endShortcutCapture() {
+        guard shortcutCaptureActive else { return }
+        shortcutCaptureActive = false
+        if started { rebuildHotkeys() }
     }
 
     /// 다듬기 백엔드는 OpenAI 호환 서버 하나뿐이다. 설정으로 주소·모델·키만 갈아끼운다.
@@ -98,18 +129,6 @@ final class Coordinator {
         )
     }
 
-    /// 모니터마다 출처를 붙여 둔다. 같은 handle이 두 키를 받지만, 어느 키인지는
-    /// 상태 기계가 구분해야 하므로 여기서 destination을 정해 넘긴다.
-    private func makeMonitor(_ key: HotkeyKey, destination: InsertDestination) -> HotkeyMonitor {
-        let monitor = HotkeyMonitor(key: key) { [weak self] event in
-            self?.handle(event, from: destination)
-        }
-        monitor.start()
-        return monitor
-    }
-
-    /// 다듬기 서버 연결 가능 여부를 주기적으로 확인한다. 설정이 바뀌면 새로 시작해
-    /// 메뉴의 안내가 최대 10초 뒤가 아니라 곧바로 새 서버를 반영하게 한다.
     private func restartAvailabilityPoll() {
         availabilityPoll?.cancel()
         availabilityPoll = Task { await pollRefinerAvailability() }
@@ -137,23 +156,33 @@ final class Coordinator {
         )
     }
 
-    private func handle(_ event: TriggerEvent, from destination: InsertDestination) {
+    private func handle(_ event: TriggerEvent, from route: RecordingRoute) {
+        guard !shortcutCaptureActive else { return }
+        let destination = route.destination
+        let promoting: Bool
+        if case .holding(_, let active) = state, let incoming = installedShortcuts[route], let previous = installedShortcuts[active] {
+            promoting = incoming.canPromote(from: previous)
+        } else { promoting = false }
+        var rejectedPromotion: String?
         // 앱으로 보내기는 대상 앱이 실행 중일 때만 시작한다. 말하기 전에 알려야 헛수고가
         // 없으므로 녹음 시작 시점에 확인하고, reduce에 넘기지 않아 상태는 idle로 남긴다.
-        if destination == .targetApp, state == .idle, case .keyDown = event {
-            guard let bundleID = config.targetAppBundleID,
-                  TargetApp.runningApplication(bundleID: bundleID) != nil
-            else {
-                overlay.showNotice("\(targetAppName) 앱이 실행 중이 아님")
-                return
+        if destination == .targetApp, state == .idle || promoting, case .keyDown = event {
+            if config.targetAppBundleID.flatMap({ TargetApp.runningApplication(bundleID: $0) }) == nil {
+                let notice = "\(targetAppName) 앱이 실행 중이 아님"
+                if promoting { rejectedPromotion = notice }
+                else { overlay.showNotice(notice); return }
             }
         }
         // 토글을 끄면 "짧은 누름"이 성립하지 않아 keyUp이 항상 처리로 넘어간다 — push-to-talk.
         let threshold: Duration = config.toggleEnabled ? DictationTuning.holdThreshold : .zero
-        let (next, effect) = reduce(state, event, from: destination, now: .now, threshold: threshold)
+        let (next, effect) = reduce(
+            state, event, from: route, now: .now, threshold: threshold,
+            promoting: promoting, promotionAllowed: rejectedPromotion == nil
+        )
         state = next
         switch effect {
         case .startCapture:
+            configureCaptureIntent(route, commandsEnabled: config.voiceCommandsEnabled, rules: config.voiceCommandRules.normalized)
             overlay.show(status: .listening)
             // 키를 누르는 순간 다듬기 서버를 깨운다. 말하는 동안 모델 로드와 프리픽스
             // 캐시가 끝나 있어야 전사 직후 바로 다듬을 수 있다. 결과는 기다리지 않는다.
@@ -182,11 +211,48 @@ final class Coordinator {
             }
             captureSession += 1
             captureSetup = Task { await beginCapture() }
-        case .stopCaptureAndProcess(let destination):
+        case .changeCaptureIntent:
+            let previous = capturePolicy
+            configureCaptureIntent(route, commandsEnabled: previous.commandsEnabled, rules: previous.rules)
+        case .discardCapture:
+            let session = captureSession
+            let notice = rejectedPromotion ?? "녹음 취소됨"
+            Task { await discardProvisionalCapture(session: session, notice: notice) }
+        case .stopCaptureAndProcess(let route):
             overlay.show(status: .refining)
-            Task { await finishAndInsert(destination: destination) }
+            Task { await finishAndInsert(destination: route.destination) }
         case .none:
             break
+        }
+    }
+
+    private func discardProvisionalCapture(session: Int, notice: String) async {
+        guard captureSession == session else { return }
+        await captureSetup?.value
+        guard captureSession == session else { return }
+        await capture?.stop()
+        await muter.unmute()
+        if let transcriber { _ = try? await transcriber.finish() }
+        if let recorder { _ = await recorder.finish() }
+        guard captureSession == session else { return }
+        reset()
+        overlay.showNotice(notice)
+    }
+
+    private func configureCaptureIntent(_ route: RecordingRoute, commandsEnabled: Bool, rules: VoiceCommandRules) {
+        capturePolicy = RecordingPolicy(route: route, commandsEnabled: commandsEnabled, rules: rules)
+        commandInput = nil
+        commandOrigin = nil
+        commandOriginHasFocus = nil
+        commandTarget = nil
+        if capturePolicy.needsRawAudio {
+            commandOrigin = NSWorkspace.shared.frontmostApplication
+            let originInput = VoiceCommandInput.capture()
+            commandOriginHasFocus = originInput?.isCurrent ?? VoiceCommandInput.captureFocus()
+            if route.destination == .targetApp {
+                commandTarget = config.targetAppBundleID.flatMap { TargetApp.runningApplication(bundleID: $0) }
+                commandInput = commandTarget.flatMap { VoiceCommandInput.capture(pid: $0.processIdentifier) }
+            } else { commandInput = originInput }
         }
     }
 
@@ -284,6 +350,13 @@ final class Coordinator {
             guard !text.isEmpty else { reset(); return }
             raw = text
             timeout = refineTimeout(for: recorded, base: base)
+            if let command = capturePolicy.command(for: text) {
+                await finishVoiceCommand(
+                    command, raw: text, destination: destination, recorded: recorded,
+                    timeout: timeout, timing: .appleOnly(transcription: transcription)
+                )
+                return
+            }
             if captureBackend.refinesText {
                 let refinementStartedAt = ContinuousClock.now
                 outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
@@ -295,13 +368,27 @@ final class Coordinator {
         } else if let recorder {
             let wav = await recorder.finish()
             guard !wav.isEmpty else { reset(); return }
-            raw = nil
             timeout = audioRefineTimeout(for: recorded, base: base)
             guard let (text, request) = await refineAudioOrGiveUp(
                 wav, timeout: timeout, recorded: recorded, refiner: refiner, baseURL: baseURL
             ) else { return }
-            outcome = .refined(text)
-            timing = .llmAudio(request: request)
+            if capturePolicy.needsRawAudio {
+                raw = text
+                if let command = capturePolicy.command(for: text) {
+                    await finishVoiceCommand(
+                        command, raw: text, destination: destination, recorded: recorded,
+                        timeout: timeout, timing: .llmAudio(request: request)
+                    )
+                    return
+                }
+                let startedAt = ContinuousClock.now
+                outcome = await refineOrFallback(text, using: refiner, timeout: timeout)
+                timing = .llmAudio(request: request + (.now - startedAt))
+            } else {
+                raw = nil
+                outcome = .refined(text)
+                timing = .llmAudio(request: request)
+            }
         } else {
             reset()
             return
@@ -310,7 +397,7 @@ final class Coordinator {
         // 시작돼 예열 시각이 덮여 있을 수 있다.
         let warmUp = warmUpState(now: .now)
         let loggedAt = Date()
-        let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
+        let pressReturn = capturePolicy.permitsAutomaticReturn && config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
         var insertionDiagnostic = ""
         let insertionTarget = destination == .targetApp ? targetAppName : "현재 앱"
@@ -362,6 +449,84 @@ final class Coordinator {
         }
     }
 
+    /// 명령에는 일반 받아쓰기의 삽입/자동 Return 경로를 사용하지 않는다.
+    private func finishVoiceCommand(
+        _ command: VoiceCommand, raw: String, destination: InsertDestination,
+        recorded: Duration, timeout: Duration, timing: DictationTiming
+    ) async {
+        let input = commandInput
+        let origin = commandOrigin
+        let originHasFocus = commandOriginHasFocus
+        let target = commandTarget
+        let client = Self.makeClient(config)
+        let shouldLog = config.logEnabled
+        let startedAt = ContinuousClock.now
+        var preparationFailure: String?
+        if destination == .targetApp, let target, input != nil {
+            // 녹음 중 사용자가 이동한 다른 입력창의 포커스를 빼앗지 않는다.
+            let prepared = await VoiceCommandProcessor.prepareTarget(originIsCurrent: originHasFocus) {
+                guard !target.isTerminated else { return false }
+                if target != origin { _ = target.activate(options: []) }
+                return await TargetApp.waitUntilKeyboardFocus(target)
+            }
+            if !prepared { preparationFailure = "입력창 포커스 확인 실패 — 명령 중단" }
+        }
+        let result: VoiceCommandProcessor.Outcome
+        if let preparationFailure {
+            result = .failed(preparationFailure)
+        } else {
+            result = await VoiceCommandProcessor.run(command, input: input) { text, instruction in
+                await requestLLMText(timeout: timeout) {
+                    try await client.edit(text, instruction: instruction)
+                }
+            }
+        }
+        let commandDuration = ContinuousClock.now - startedAt
+        let completeTiming: DictationTiming
+        switch timing {
+        case .appleOnly(let transcription):
+            completeTiming = .apple(transcription: transcription, refinement: commandDuration)
+        case .apple(let transcription, let refinement):
+            completeTiming = .apple(transcription: transcription, refinement: refinement + commandDuration)
+        case .llmAudio(let request):
+            completeTiming = .llmAudio(request: request + commandDuration)
+        }
+        // 명령이 성공했고 대상 입력창에 포커스가 남아 있을 때만 원래 앱으로 돌아간다.
+        if destination == .targetApp, let target, let origin, target != origin,
+           !origin.isTerminated, input?.isCurrent() == true {
+            switch result {
+            case .edited, .submitted:
+                if case .submitted = result { try? await Task.sleep(for: .milliseconds(200)) }
+                if input?.isCurrent() == true { _ = origin.activate(options: []) }
+            case .failed: break
+            }
+        }
+        let loggedAt = Date()
+        reset()
+        overlay.showNotice(result.notice)
+        if shouldLog, let url = DictationLog.fileURL {
+            let entry: String
+            switch result {
+            case .edited(let text):
+                entry = DictationLog.entry(
+                    raw: raw, outcome: .refined(text), recorded: recorded, at: loggedAt,
+                    timing: completeTiming, insertion: "음성 수정 · \(result.notice)"
+                )
+            case .submitted:
+                entry = DictationLog.entry(
+                    raw: raw, outcome: .transcribed("Enter"), recorded: recorded, at: loggedAt,
+                    timing: completeTiming, insertion: "음성 보내기 · \(result.notice)"
+                )
+            case .failed(let reason):
+                entry = DictationLog.failureEntry(
+                    label: "음성 명령 중단", recorded: recorded, at: loggedAt,
+                    cause: reason, timing: completeTiming
+                )
+            }
+            appendLog(entry, to: url)
+        }
+    }
+
     /// 오디오를 한 요청으로 다듬는다. 결과와 함께 요청에 걸린 시간을 돌려준다. 실패하면 넣을 원본이
     /// 없다 — Apple 전사로 몰래 대체하지 않는다(사용자가 그 경로를 끈 것이므로). 상태를 되돌리고
     /// 실패를 알리고 로그에 원인과 소요 시간을 남긴 뒤 nil을 돌려준다.
@@ -371,7 +536,11 @@ final class Coordinator {
     ) async -> (text: String, took: Duration)? {
         let audioRefiner = audioRefiner
         let startedAt = ContinuousClock.now
-        let result = await requestLLMText(timeout: timeout, { try await audioRefiner.refine(wav: wav) })
+        let commandsEnabled = capturePolicy.needsRawAudio
+        let result = await requestLLMText(timeout: timeout, {
+            if commandsEnabled { return try await audioRefiner.transcribe(wav: wav) }
+            return try await audioRefiner.refine(wav: wav)
+        })
         let took = ContinuousClock.now - startedAt
         switch result {
         case .text(let text):
@@ -435,6 +604,10 @@ final class Coordinator {
     }
 
     private func reset() {
+        commandInput = nil
+        commandOrigin = nil
+        commandOriginHasFocus = nil
+        commandTarget = nil
         capture = nil
         transcriber = nil
         recorder = nil
@@ -442,5 +615,6 @@ final class Coordinator {
         level = 0
         overlay.hide()
         state = .idle
+        if hotkeyRefreshPending { rebuildHotkeys() }
     }
 }
