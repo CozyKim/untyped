@@ -1,21 +1,20 @@
 import AppKit
 import ApplicationServices
 
-/// 완성된 문자열의 전달을 직렬화한다. 이벤트 게시는 수신 완료가 아니다.
+/// 앱 종류와 관계없이 키 이벤트 게시를 전송 완료로 처리한다. 수신 값은 조회하지 않는다.
 enum TextInserter {
     enum Result: Equatable, Sendable {
-        case inserted
-        /// xterm의 숨은 입력창처럼 수신 값을 제공하지 않는 대상에 게시했다.
-        case postedWithoutVerification
+        case posted
         case notReady
         case clipboardChanged
         case writeFailed
         case eventFailed
-        case unconfirmed
         case cancelled
     }
 
-    static let pasteSettleTimeout: Duration = .seconds(3)
+    static let focusTimeout: Duration = .seconds(3)
+    /// 수신 검증이 아닌 이벤트 처리 여유. 다음 전송이 클립보드를 즉시 덮어쓰지 않게 한다.
+    static let pasteSettleDelay: Duration = .milliseconds(200)
     @MainActor private static var busy = false
 
     static var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
@@ -25,7 +24,6 @@ enum TextInserter {
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    /// 준비(앱 활성화)부터 수신 확인·클립보드 복원까지 한 트랜잭션으로 실행한다.
     @MainActor
     @discardableResult
     static func insert(
@@ -80,18 +78,6 @@ enum TextInserter {
                 focusFailure = nil
                 return true
             },
-            targetValue: {
-                // 활성화 직후 AX 트리가 아직 준비되지 않았으면 다음 기준값 조회에서 다시 찾는다.
-                if focused == nil { focused = focusedElement() }
-                return focused.flatMap(elementValue)
-            },
-            targetIsTransient: {
-                guard let focused else { return false }
-                return isTransientInput(
-                    role: elementAttribute(focused, kAXRoleAttribute) as? String,
-                    domClasses: elementAttribute(focused, "AXDOMClassList") as? [String] ?? []
-                )
-            },
             onDiagnostic: { message in
                 onDiagnostic(message + (focusFailure.map { " · " + $0 } ?? ""))
             },
@@ -100,39 +86,35 @@ enum TextInserter {
         )
     }
 
-    /// 이름 있는 실제 pasteboard와 수신 앱 경계를 주입할 수 있다. 본문은 로그에 남기지 않는다.
-    /// timeout과 검증 불가는 성공을 뜻하지 않는다. 수신을 확인하지 못하면 새 텍스트를 유지한다.
+    /// 게시 전 실패만 원래 클립보드를 복원한다. 게시 뒤에는 대상 앱의 늦은 읽기를 위해
+    /// 보낸 문자열을 남긴다. 이벤트 게시를 신뢰하며 수신 확인이나 자동 재전송은 하지 않는다.
     @MainActor
     @discardableResult
     static func insert(
         _ text: String, into pasteboard: NSPasteboard,
-        timeout: Duration = pasteSettleTimeout,
+        timeout: Duration = focusTimeout,
+        settleDelay: Duration = pasteSettleDelay,
         prepare: () async -> Bool = { true },
         hasFocus: () -> Bool? = { true },
-        targetValue: () -> String? = { nil },
-        targetIsTransient: () -> Bool = { false },
         onDiagnostic: (String) -> Void = { _ in },
         paste: () -> Bool,
         submit: (() -> Bool)? = nil
     ) async -> Result {
         var posted = false
-        // 모든 종료 경로의 진단을 호출자에게 넘긴다. 저장 위치·설정은 Coordinator가 결정한다.
         func report(_ result: Result, detail: String? = nil) -> Result {
             let summary: String
             switch result {
-            case .inserted: summary = "수신 확인"
-            case .postedWithoutVerification: summary = "붙여넣기 전송됨 · 터미널 입력은 수신 검증 불가"
+            case .posted: summary = "전송 완료"
             case .notReady: summary = "게시 전 중단 · 텍스트 또는 활성화·포커스 확인 실패"
             case .clipboardChanged: summary = "클립보드 소유권 변경"
             case .writeFailed: summary = "클립보드 읽기·쓰기 검증 실패"
-            case .eventFailed: summary = "키 이벤트 생성 실패"
-            case .unconfirmed: summary = "수신 미확인"
+            case .eventFailed: summary = "키 이벤트 전송 실패"
             case .cancelled: summary = "취소됨"
             }
             onDiagnostic((detail ?? summary) + (posted ? " · ⌘V 게시 후" : " · ⌘V 게시 전"))
             return result
         }
-        // nil일 때만 기다린다. false(다른 앱/요소)는 즉시 거부하며 추측해서 게시하지 않는다.
+        // 포커스 조회 실패만 잠시 기다린다. 다른 앱이 명시적으로 확인되면 즉시 중단한다.
         func waitForFocus(until deadline: ContinuousClock.Instant) async -> Bool? {
             while !Task.isCancelled {
                 if let state = hasFocus() { return state }
@@ -143,7 +125,6 @@ enum TextInserter {
             return nil
         }
         guard !text.isEmpty else { return report(.notReady) }
-        // MainActor는 await 사이의 재진입을 막지 않는다. 대기자가 잠금을 얻은 뒤에만 활성화한다.
         while busy {
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { return report(.cancelled) }
@@ -157,10 +138,8 @@ enum TextInserter {
             return report(Task.isCancelled ? .cancelled : .notReady)
         }
         guard !Task.isCancelled else { return report(.cancelled) }
-        var before: String?
-        var transientInput = false
 
-        // 소유권을 넘기기 전에 모든 표현을 materialize한다. 읽지 못한 표현이 있으면 손실 없이 중단한다.
+        // 게시 전 중단 때 손실 없이 돌려놓을 수 있도록 모든 표현을 읽어 둔다.
         let originalCount = pasteboard.changeCount
         var savedItems: [NSPasteboardItem] = []
         for item in pasteboard.pasteboardItems ?? [] {
@@ -175,109 +154,40 @@ enum TextInserter {
         guard await waitForFocus(until: preparationDeadline) == true else {
             return report(Task.isCancelled ? .cancelled : .notReady)
         }
-        // 재조회가 await를 거쳤으므로 스냅샷 이후 외부 복사가 없었는지 다시 검사한다.
         guard pasteboard.changeCount == originalCount else { return report(.clipboardChanged) }
 
         let ownedCount = pasteboard.clearContents()
         let wrote = pasteboard.setString(text, forType: .string)
-        // clearContents가 소유권 세대를 바꾼다. setString은 같은 세대에 데이터를 채운다.
-        // readback과 changeCount를 함께 확인해야 외부 소유자가 쓴 같은 문자열도 구분된다.
         guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
         guard wrote, pasteboard.string(forType: .string) == text else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
             return report(.writeFailed)
         }
-        guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-        // 마지막 대기 뒤의 값을 기준으로 삼는다. 앞서 읽은 값을 보관하면 대기 중 사용자가
-        // 입력한 문장을 이번 붙여넣기의 결과로 오인할 수 있다. 기준값 이후 await가 생기면 다시 읽는다.
-        let baselineDeadline = min(preparationDeadline, ContinuousClock.now + .milliseconds(300))
-        while true {
-            guard await waitForFocus(until: preparationDeadline) == true else {
-                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return report(Task.isCancelled ? .cancelled : .notReady)
-            }
-            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-            before = targetValue()
-            transientInput = targetIsTransient()
-            let focus = hasFocus()
-            if focus == false {
-                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return report(.notReady)
-            }
-            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-            if focus == true, transientInput || before != nil || ContinuousClock.now >= baselineDeadline { break }
-            guard ContinuousClock.now < preparationDeadline else {
-                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return report(.notReady)
-            }
-            do { try await Task.sleep(for: .milliseconds(10)) }
-            catch {
-                restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                return report(.cancelled)
-            }
+        guard await waitForFocus(until: preparationDeadline) == true else {
+            restore(savedItems, to: pasteboard, ifOwned: ownedCount)
+            return report(Task.isCancelled ? .cancelled : .notReady)
         }
+        guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
         guard paste() else {
             restore(savedItems, to: pasteboard, ifOwned: ownedCount)
             return report(.eventFailed)
         }
-
         posted = true
-        let deadline = ContinuousClock.now + timeout
-        while true {
-            guard !Task.isCancelled else { return report(.cancelled) }
-            let focus = hasFocus()
-            if focus == false {
-                return report(.unconfirmed, detail: "포커스 변경으로 수신 미확인")
+
+        // ⌘V와 Return의 순서 및 대상 앱 복귀를 위한 여유만 둔다. AXValue는 읽지 않는다.
+        do { try await Task.sleep(for: settleDelay) }
+        catch { return report(.cancelled) }
+        guard !Task.isCancelled else { return report(.cancelled) }
+        guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
+        if let submit {
+            guard hasFocus() == true else {
+                return report(.eventFailed, detail: "붙여넣기 전송됨 · 포커스 확인 실패로 Return 생략")
             }
-            guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-            // xterm은 입력을 PTY에 전달한 뒤 helper textarea를 비운다. 빈 AXValue를
-            // 기다려도 수신 증거가 생기지 않는다. 성공으로 간주하거나 Return을 보내지 않는다.
-            if focus == true, transientInput { return report(.postedWithoutVerification) }
-            var focusUnavailable = focus == nil
-            let after = focus == true ? targetValue() : nil
-            if focus == true, received(text, before: before, after: after) {
-                let finalFocus = hasFocus()
-                if finalFocus == false {
-                    return report(.unconfirmed, detail: "수신 관측 중 포커스 변경")
-                }
-                guard pasteboard.changeCount == ownedCount else { return report(.clipboardChanged) }
-                focusUnavailable = finalFocus == nil
-                if finalFocus == true {
-                    if let submit, !submit() {
-                        restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                        return report(.eventFailed)
-                    }
-                    restore(savedItems, to: pasteboard, ifOwned: ownedCount)
-                    return report(.inserted)
-                }
+            guard submit() else {
+                return report(.eventFailed, detail: "붙여넣기 전송됨 · Return 키 이벤트 전송 실패")
             }
-            guard ContinuousClock.now < deadline else {
-                let baseline = before == nil ? "읽기 불가" : "읽기 가능"
-                let current = after == nil ? "읽기 불가" : "읽기 가능"
-                let focusDetail = focusUnavailable ? " · 포커스 조회 불가" : ""
-                let valueDetail: String
-                if let before, let after {
-                    valueDetail = " · 값 \(before == after ? "변경 없음" : "변경됨") · 길이 \(before.count)→\(after.count) · 전송 \(text.count)"
-                } else {
-                    valueDetail = ""
-                }
-                return report(.unconfirmed, detail: "확인 시간 초과 · 사전 값 \(baseline) · 현재 값 \(current)\(focusDetail)\(valueDetail)")
-            }
-            do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return report(.cancelled) }
         }
-    }
-
-    /// 과거 내용이나 동일한 끝 20글자는 수신 증거가 아니다. 전체 텍스트가 새로 나타나야 한다.
-    /// 이미 같은 문장이 있으면 개수가 증가해야 한다. 동일 선택 영역 치환은 보수적으로 미확인 처리한다.
-    static func received(_ text: String, before: String?, after: String?) -> Bool {
-        guard let before, let after, before != after, !text.isEmpty else { return false }
-        return after.components(separatedBy: text).count > before.components(separatedBy: text).count
-    }
-
-    /// 앱 이름이나 빈 값만으로 추정하지 않고, 실제 xterm 입력 요소만 분류한다.
-    static func isTransientInput(role: String?, domClasses: [String]) -> Bool {
-        role == kAXTextFieldRole && domClasses.contains("xterm-helper-textarea")
+        return report(.posted)
     }
 
     @MainActor
@@ -302,7 +212,7 @@ enum TextInserter {
         return true
     }
 
-    /// 관측 대상 요소를 게시 전에 고정한다. 뒤늦게 바뀐 다른 앱/입력창을 성공 증거로 쓰지 않는다.
+    /// 입력값의 수신 검증과 별개로, 처음 선택한 입력창에 보내는지는 확인한다.
     private static func focusedElement() -> AXUIElement? {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
         let app = AXUIElementCreateApplication(pid)
@@ -313,17 +223,5 @@ enum TextInserter {
         let focused = element as! AXUIElement
         AXUIElementSetMessagingTimeout(focused, 0.1)
         return focused
-    }
-
-    private static func elementValue(_ focused: AXUIElement) -> String? {
-        elementAttribute(focused, kAXValueAttribute) as? String
-    }
-
-    /// 속성이 없거나 조회가 실패하면 nil을 반환한다. 사용자 텍스트를 로깅하지 않는다.
-    private static func elementAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
-        else { return nil }
-        return value
     }
 }

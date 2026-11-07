@@ -12,312 +12,205 @@ struct TextInserterTests {
         return board
     }
 
-    @Test("수신 확인 뒤에만 원래 클립보드의 모든 형식을 복원한다")
-    func confirmedPasteRestoresAllRepresentations() async {
+    @Test("입력값을 읽지 못해도 전송을 완료하고 설정된 Return을 보낸다")
+    func trustsPostedPasteWithoutReadingValue() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        let custom = NSPasteboard.PasteboardType("test.binary")
-        board.setData(Data([0, 1, 255]), forType: custom)
-        var value = "기존 문장 "
-        let result = await TextInserter.insert("받아쓰기", into: board, targetValue: { value }) {
-            value += board.string(forType: .string) ?? ""
-            return true
-        }
-        #expect(result == .inserted)
-        #expect(value == "기존 문장 받아쓰기")
-        #expect(board.string(forType: .string) == "원본")
-        #expect(board.data(forType: custom) == Data([0, 1, 255]))
+        var events: [String] = []
+        var diagnostics: [String] = []
+        let result = await TextInserter.insert(
+            "터미널 문장", into: board, timeout: .milliseconds(20), settleDelay: .milliseconds(1),
+            onDiagnostic: { diagnostics.append($0) },
+            paste: { events.append("paste"); return true },
+            submit: { events.append("return"); return true }
+        )
+        #expect(result == .posted)
+        #expect(events == ["paste", "return"])
+        #expect(board.string(forType: .string) == "터미널 문장")
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.contains("전송 완료") == true)
     }
 
-    @Test("수신 미확인은 복원·Return·재시도를 하지 않는다")
-    func unconfirmedPasteKeepsRefinedText() async throws {
+    @Test("Return 없이도 한 번 게시한 뒤 수신을 기다리지 않고 완료한다")
+    func pasteOnlyCompletesWithoutReceipt() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        var events = 0
-        var returns = 0
+        var posts = 0
+        var focused = true
         let result = await TextInserter.insert(
-            "다듬음", into: board, timeout: .milliseconds(20), targetValue: { nil },
-            paste: { events += 1; return true }, submit: { returns += 1; return true }
+            "받아쓰기", into: board, settleDelay: .zero, hasFocus: { focused },
+            paste: { posts += 1; focused = false; return true }
         )
-        try await Task.sleep(for: .milliseconds(1150))
-        #expect(result == .unconfirmed)
-        #expect(board.string(forType: .string) == "다듬음")
-        #expect(events == 1)
-        #expect(returns == 0)
+        #expect(result == .posted)
+        #expect(posts == 1)
+        #expect(board.string(forType: .string) == "받아쓰기")
     }
 
     @Test("외부 클립보드 변경은 복원이나 재전송으로 덮어쓰지 않는다")
     func externalChangeIsNotOverwritten() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        let result = await TextInserter.insert("받아쓰기", into: board) {
+        var returns = 0
+        let result = await TextInserter.insert("받아쓰기", into: board, settleDelay: .zero, paste: {
             board.clearContents()
             board.setString("사용자가 새로 복사한 것", forType: .string)
             return true
-        }
+        }, submit: { returns += 1; return true })
         #expect(result == .clipboardChanged)
         #expect(board.string(forType: .string) == "사용자가 새로 복사한 것")
+        #expect(returns == 0)
     }
 
-    @Test("실패한 게시와 활성화는 원래 클립보드를 보존한다")
-    func failuresBeforePostingPreserveOriginal() async {
+    @Test("게시 전 실패는 모든 클립보드 형식을 보존한다", arguments: ["empty", "activation", "event", "focus"])
+    func failuresBeforePostingPreserveOriginal(scenario: String) async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        let inactive = await TextInserter.insert("받아쓰기", into: board, prepare: { false }, paste: {
-            Issue.record("활성화 실패 뒤 붙여넣으면 안 된다")
-            return true
-        })
-        #expect(inactive == .notReady)
+        let custom = NSPasteboard.PasteboardType("test.binary")
+        board.setData(Data([0, 1, 255]), forType: custom)
+        var posts = 0
+        var returns = 0
+        let result = await TextInserter.insert(
+            scenario == "empty" ? "" : "받아쓰기", into: board, settleDelay: .zero,
+            prepare: { scenario != "activation" },
+            hasFocus: { scenario != "focus" || board.string(forType: .string) == "원본" },
+            paste: { posts += 1; return false }, submit: { returns += 1; return true }
+        )
+        #expect(result == (scenario == "event" ? .eventFailed : .notReady))
+        #expect(posts == (scenario == "event" ? 1 : 0))
+        #expect(returns == 0)
         #expect(board.string(forType: .string) == "원본")
-        let failed = await TextInserter.insert("받아쓰기", into: board, paste: { false })
-        #expect(failed == .eventFailed)
-        #expect(board.string(forType: .string) == "원본")
+        #expect(board.data(forType: custom) == Data([0, 1, 255]))
     }
 
-    @Test("클립보드 쓰기 뒤 포커스가 바뀌면 게시 전에 중단한다")
-    func lostFocusBeforePostingRestoresOriginal() async {
+    @Test("게시 전 포커스 조회 실패는 복구를 기다리되 실제 불일치는 거부한다", arguments: ["recover", "unknown", "other"])
+    func preflightFocusHandling(scenario: String) async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var reads = 0
+        var posts = 0
+        let result = await TextInserter.insert(
+            "문장", into: board, timeout: .milliseconds(40), settleDelay: .zero,
+            hasFocus: {
+                reads += 1
+                if scenario == "other" { return false }
+                return scenario == "recover" && reads > 2 ? true : nil
+            }, paste: { posts += 1; return true }
+        )
+        #expect(result == (scenario == "recover" ? .posted : .notReady))
+        #expect(posts == (scenario == "recover" ? 1 : 0))
+        #expect(board.string(forType: .string) == (scenario == "recover" ? "문장" : "원본"))
+        if scenario == "other" { #expect(reads == 1) }
+    }
+
+    @Test("게시 뒤 포커스가 달라지거나 읽히지 않으면 다른 앱에 Return을 보내지 않는다", arguments: [false, nil] as [Bool?])
+    func focusLossBeforeReturnKeepsPayload(focusAfterPaste: Bool?) async {
+        let board = makePasteboard()
+        defer { board.releaseGlobally() }
+        var focused: Bool? = true
+        var returns = 0
+        var diagnostics: [String] = []
+        let result = await TextInserter.insert(
+            "전체 문장", into: board, settleDelay: .zero, hasFocus: { focused },
+            onDiagnostic: { diagnostics.append($0) },
+            paste: { focused = focusAfterPaste; return true },
+            submit: { returns += 1; return true }
+        )
+        #expect(result == .eventFailed)
+        #expect(returns == 0)
+        #expect(board.string(forType: .string) == "전체 문장")
+        #expect(diagnostics.first?.contains("Return 생략") == true)
+        #expect(diagnostics.first?.contains("⌘V 게시 후") == true)
+    }
+
+    @Test("Return 전송 실패 뒤에는 이미 보낸 문장을 클립보드에 남긴다")
+    func submitFailureKeepsPayload() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
         let result = await TextInserter.insert(
-            "다듬음", into: board,
-            hasFocus: { board.string(forType: .string) == "원본" },
-            paste: { Issue.record("다른 앱에 게시하면 안 된다"); return true }
+            "전체 문장", into: board, settleDelay: .zero,
+            paste: { true }, submit: { false }
         )
-        #expect(result == .notReady)
-        #expect(board.string(forType: .string) == "원본")
+        #expect(result == .eventFailed)
+        #expect(board.string(forType: .string) == "전체 문장")
     }
 
-    @Test("동시 호출도 준비·게시·수신·복원 전체가 직렬화된다")
-    func concurrentInsertsPreserveOriginal() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var received = ""
-        var order: [String] = []
-        var tasks: [Task<TextInserter.Result, Never>] = []
-        for index in 0..<3 {
-            tasks.append(Task { @MainActor in
-                await TextInserter.insert(
-                    "문장\(index)", into: board,
-                    prepare: {
-                        #expect(board.string(forType: .string) == "원본")
-                        order.append("prepare")
-                        return true
-                    }, targetValue: { received }, paste: {
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(30))
-                            received += board.string(forType: .string) ?? ""
-                            order.append("read")
-                        }
-                        return true
-                    }
-                )
-            })
-        }
-        for task in tasks { #expect(await task.value == .inserted) }
-        #expect(order == ["prepare", "read", "prepare", "read", "prepare", "read"])
-        for index in 0..<3 { #expect(received.contains("문장\(index)")) }
-        #expect(board.string(forType: .string) == "원본")
-    }
-
-    @Test("동일한 끝부분·부분 결과·오래된 전체 문장을 수신으로 오인하지 않는다")
-    func receiptRequiresNewCompleteText() {
-        #expect(!TextInserter.received("새 문장 마지막", before: "옛 문장 마지막", after: "옛 문장 마지막"))
-        #expect(!TextInserter.received("새 문장 마지막", before: "", after: "새 문장"))
-        #expect(!TextInserter.received("전체", before: "전체", after: "전체 일부"))
-        #expect(TextInserter.received("전체", before: "전체", after: "전체전체"))
-        #expect(!TextInserter.received("전체", before: nil, after: "전체"))
-    }
-
-    @Test("xterm의 비워지는 입력값은 실패가 아닌 검증 불가로 기록한다")
-    func transientTerminalInputDoesNotReportTimeout() async {
+    @Test("게시 전 취소는 키 이벤트와 클립보드를 건드리지 않는다")
+    func cancellationBeforePostPreservesOriginal() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
         var posts = 0
-        var submits = 0
-        var diagnostics: [String] = []
-        let result = await TextInserter.insert(
-            "터미널 입력", into: board, timeout: .milliseconds(20),
-            targetValue: { "" }, targetIsTransient: { true },
-            onDiagnostic: { diagnostics.append($0) },
-            paste: { posts += 1; return true }, submit: { submits += 1; return true }
-        )
-        #expect(result == .postedWithoutVerification)
-        #expect(posts == 1)
-        #expect(submits == 0)
-        #expect(board.string(forType: .string) == "터미널 입력")
-        #expect(diagnostics.count == 1)
-        #expect(diagnostics[0].contains("검증 불가"))
-        #expect(!diagnostics[0].contains("확인 시간 초과"))
-    }
-
-    @Test("xterm의 숨은 입력 요소만 검증 불가로 분류한다")
-    func transientInputDetectionIsSpecific() {
-        #expect(TextInserter.isTransientInput(role: "AXTextField", domClasses: ["xterm-helper-textarea"]))
-        #expect(!TextInserter.isTransientInput(role: "AXTextField", domClasses: []))
-        #expect(!TextInserter.isTransientInput(role: "AXTextField", domClasses: ["terminal"]))
-        #expect(!TextInserter.isTransientInput(role: nil, domClasses: ["xterm-helper-textarea"]))
-        #expect(!TextInserter.isTransientInput(role: "AXGroup", domClasses: ["xterm-helper-textarea"]))
-    }
-
-    @Test("터미널에서도 게시 실패는 검증 불가로 숨기지 않는다")
-    func terminalPostFailurePreservesClipboard() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        let result = await TextInserter.insert(
-            "터미널 입력", into: board, targetValue: { "" },
-            targetIsTransient: { true }, paste: { false }
-        )
-        #expect(result == .eventFailed)
+        let task = Task { @MainActor in
+            await TextInserter.insert("문장", into: board, paste: { posts += 1; return true })
+        }
+        task.cancel()
+        #expect(await task.value == .cancelled)
+        #expect(posts == 0)
         #expect(board.string(forType: .string) == "원본")
     }
 
-    @Test("터미널의 포커스·소유권 변경과 취소는 계속 보고한다", arguments: ["focus", "clipboard", "cancel"])
-    func terminalPostInterruptionsRemainVisible(scenario: String) async {
+    @Test("게시 뒤 취소해도 클립보드는 남기고 Return은 보내지 않는다")
+    func cancellationAfterPostKeepsPayload() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        var focused = true
         var posted = false
+        var returns = 0
         let task = Task { @MainActor in
             await TextInserter.insert(
-                "터미널 입력", into: board, hasFocus: { focused },
-                targetValue: { "" }, targetIsTransient: { true },
-                paste: {
-                    posted = true
-                    if scenario == "focus" { focused = false }
-                    if scenario == "clipboard" { board.clearContents(); board.setString("새 복사", forType: .string) }
-                    return true
-                }
+                "전체 문장", into: board,
+                paste: { posted = true; return true }, submit: { returns += 1; return true }
             )
-        }
-        // 취소 시나리오는 게시 전에 취소하여 키 이벤트가 발생하지 않아야 한다.
-        if scenario == "cancel" { task.cancel() }
-        let result = await task.value
-        if scenario == "cancel" {
-            #expect(result == .cancelled)
-            #expect(!posted)
-        } else if scenario == "clipboard" {
-            #expect(result == .clipboardChanged)
-            #expect(board.string(forType: .string) == "새 복사")
-        } else {
-            #expect(!focused)
-            #expect(result == .unconfirmed)
-        }
-    }
-
-    @Test("Return은 전체 텍스트를 수신한 뒤 한 번만 보낸다")
-    func submitFollowsReceipt() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var value = ""
-        var submitted: [String] = []
-        let result = await TextInserter.insert(
-            "전체 문장", into: board, targetValue: { value }, paste: {
-                Task { @MainActor in
-                    value = "전체"
-                    try? await Task.sleep(for: .milliseconds(30))
-                    value = board.string(forType: .string) ?? ""
-                }
-                return true
-            }, submit: { submitted.append(value); return true }
-        )
-        #expect(result == .inserted)
-        #expect(submitted == ["전체 문장"])
-        #expect(board.string(forType: .string) == "원본")
-    }
-
-    @Test("게시 뒤 포커스 손실과 취소는 늦은 읽기의 데이터를 복원하지 않는다")
-    func interruptionAfterPostPreservesPayload() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var focused = true
-        let lost = await TextInserter.insert("다듬음", into: board, hasFocus: { focused }, paste: {
-            focused = false
-            return true
-        })
-        #expect(lost == .unconfirmed)
-        #expect(board.string(forType: .string) == "다듬음")
-        var posted = false
-        let task = Task { @MainActor in
-            await TextInserter.insert("취소 후에도 보존", into: board, paste: { posted = true; return true })
         }
         while !posted { await Task.yield() }
         task.cancel()
         #expect(await task.value == .cancelled)
-        #expect(board.string(forType: .string) == "취소 후에도 보존")
-    }
-    @Test("수신 관측 중 포커스가 바뀌면 Return을 보내지 않는다")
-    func focusChangeDuringReceiptPreventsSubmit() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var posted = false
-        var focused = true
-        var returns = 0
-        let result = await TextInserter.insert(
-            "전체 문장", into: board, hasFocus: { focused }, targetValue: {
-                if posted { focused = false; return "전체 문장" }
-                return ""
-            }, paste: { posted = true; return true },
-            submit: { returns += 1; return true }
-        )
-        #expect(result == .unconfirmed)
         #expect(returns == 0)
         #expect(board.string(forType: .string) == "전체 문장")
     }
 
-    @Test("접근성 입력값이 늦게 준비되어도 게시 전 기준값을 확보한다")
-    func waitsForInitiallyUnavailableValue() async {
+    @Test("동시 호출도 준비·붙여넣기·처리 여유·Return 순서가 섞이지 않는다")
+    func concurrentInsertsAreSerialized() async {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        var reads = 0
-        var posted = false
-        var submitted = 0
-        let result = await TextInserter.insert(
-            "전체 문장", into: board, timeout: .milliseconds(100), targetValue: {
-                reads += 1
-                if reads == 1 { return nil }
-                return posted ? "전체 문장" : ""
-            }, paste: {
-                #expect(reads >= 2)
-                posted = true
-                return true
-            }, submit: { submitted += 1; return true }
-        )
-        #expect(result == .inserted)
-        #expect(submitted == 1)
-        #expect(board.string(forType: .string) == "원본")
+        var order: [String] = []
+        var received: [String] = []
+        var readers: [Task<Void, Never>] = []
+        var tasks: [Task<TextInserter.Result, Never>] = []
+        for index in 0..<3 {
+            tasks.append(Task { @MainActor in
+                await TextInserter.insert(
+                    "문장\(index)", into: board, settleDelay: .milliseconds(40),
+                    prepare: { order.append("prepare"); await Task.yield(); return true },
+                    paste: {
+                        order.append("paste")
+                        readers.append(Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(1))
+                            received.append(board.string(forType: .string) ?? "")
+                            order.append("read")
+                        })
+                        return true
+                    }, submit: { order.append("return"); return true }
+                )
+            })
+        }
+        for task in tasks { #expect(await task.value == .posted) }
+        for reader in readers { await reader.value }
+        #expect(order == ["prepare", "paste", "read", "return", "prepare", "paste", "read", "return", "prepare", "paste", "read", "return"])
+        #expect(Set(received) == Set(["문장0", "문장1", "문장2"]))
+        #expect(board.string(forType: .string) == received.last)
     }
 
-    @Test("게시 후 나타난 값은 사전 기준값으로 사용하지 않는다")
-    func unavailableBaselineDoesNotTreatPostPasteValueAsBaseline() async {
+    @Test("전송 결과가 본문을 노출하지 않고 받아쓰기 로그의 같은 항목에 기록된다", arguments: [true, false])
+    func insertionDiagnosticIsWrittenToDictationLog(postSucceeds: Bool) async throws {
         let board = makePasteboard()
         defer { board.releaseGlobally() }
-        var posted = false
-        var submits = 0
-        let result = await TextInserter.insert(
-            "전체 문장", into: board, timeout: .milliseconds(20),
-            targetValue: { posted ? "전체 문장" : nil },
-            paste: { posted = true; return true },
-            submit: { submits += 1; return true }
-        )
-        #expect(result == .unconfirmed)
-        #expect(submits == 0)
-        #expect(board.string(forType: .string) == "전체 문장")
-    }
-
-    @Test("입력 진단이 받아쓰기 파일의 같은 항목에 기록된다", arguments: [true, false])
-    func insertionDiagnosticIsWrittenToDictationLog(confirmed: Bool) async throws {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var value = ""
         var diagnostics: [String] = []
-        _ = await TextInserter.insert(
-            "완성 문장", into: board, timeout: .milliseconds(20), targetValue: { value },
-            onDiagnostic: { diagnostics.append($0) }, paste: {
-                if confirmed { value = "완성 문장" }
-                return true
-            }
+        let result = await TextInserter.insert(
+            "완성 문장", into: board, settleDelay: .zero,
+            onDiagnostic: { diagnostics.append($0) }, paste: { postSucceeds }
         )
+        #expect(result == (postSucceeds ? .posted : .eventFailed))
         #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.contains("완성 문장") == false)
         let entry = DictationLog.entry(
             raw: "원문", outcome: .refined("완성 문장"), recorded: .seconds(1),
             at: Date(), insertion: diagnostics.first.map { "테스트 앱 · " + $0 }
@@ -326,29 +219,8 @@ struct TextInserterTests {
         defer { try? FileManager.default.removeItem(at: url) }
         try DictationLog.append(entry, to: url)
         let saved = try String(contentsOf: url, encoding: .utf8)
-        #expect(saved.contains(confirmed ? "입력: 테스트 앱 · 수신 확인" : "입력: 테스트 앱 · 확인 시간 초과"))
+        #expect(saved.contains(postSucceeds ? "입력: 테스트 앱 · 전송 완료" : "입력: 테스트 앱 · 키 이벤트 전송 실패"))
         #expect(saved.contains("STT : 원문\n결과: 완성 문장"))
-    }
-
-    @Test("게시 전 실패와 클립보드 변경도 진단을 전달한다", arguments: ["activation", "event", "clipboard", "focus"])
-    func earlyFailuresIncludeDiagnostic(scenario: String) async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var focused = true
-        var diagnostics: [String] = []
-        _ = await TextInserter.insert(
-            "본문", into: board, timeout: .milliseconds(10), prepare: { scenario != "activation" },
-            hasFocus: { focused }, onDiagnostic: { diagnostics.append($0) }, paste: {
-                if scenario == "clipboard" { board.clearContents() }
-                if scenario == "focus" { focused = false }
-                return scenario != "event"
-            }
-        )
-        let expected = ["activation": "게시 전 중단", "event": "키 이벤트 생성 실패",
-                        "clipboard": "클립보드 소유권 변경", "focus": "포커스 변경"]
-        #expect(diagnostics.count == 1)
-        #expect(diagnostics.first?.contains(expected[scenario]!) == true)
-        #expect(diagnostics.first?.contains("본문") == false)
     }
 
     @Test("대상 앱 미실행도 파일 기록용 진단을 전달한다")
@@ -361,125 +233,4 @@ struct TextInserterTests {
         #expect(result == .notRunning)
         #expect(diagnostics == ["게시 전 중단 · 대상 앱이 실행 중이 아님"])
     }
-
-    @Test("게시 뒤 일시적인 입력 요소 조회 실패는 50회 모두 복구한다")
-    func transientFocusReadFailure50Cycles() async {
-        for _ in 0..<50 {
-            let board = makePasteboard()
-            defer { board.releaseGlobally() }
-            var posted = false
-            var failures = 0
-            var submits = 0
-            let result = await TextInserter.insert(
-                "완성 문장", into: board, timeout: .milliseconds(200), hasFocus: {
-                    if posted, failures < 2 { failures += 1; return nil }
-                    return true
-                }, targetValue: { posted ? "완성 문장" : "" },
-                paste: { posted = true; return true }, submit: { submits += 1; return true }
-            )
-            #expect(result == .inserted)
-            #expect(submits == 1)
-            #expect(board.string(forType: .string) == "원본")
-        }
-    }
-
-    @Test("수신 확인 직후 조회 실패도 Return 전에 복구를 기다린다")
-    func transientFocusFailureBeforeSubmit() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var posted = false
-        var observed = false
-        var failedOnce = false
-        var submits = 0
-        let result = await TextInserter.insert(
-            "완성 문장", into: board, timeout: .milliseconds(200), hasFocus: {
-                if observed, !failedOnce { failedOnce = true; return nil }
-                return true
-            }, targetValue: {
-                if posted { observed = true; return "완성 문장" }
-                return ""
-            }, paste: { posted = true; return true }, submit: { submits += 1; return true }
-        )
-        #expect(result == .inserted)
-        #expect(submits == 1)
-    }
-
-    @Test("조회 불가가 계속되면 전송·복원하지 않고 이유를 기록한다")
-    func permanentUnknownFocusRemainsUnconfirmed() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var posted = false
-        var diagnostics: [String] = []
-        var submits = 0
-        let result = await TextInserter.insert(
-            "문장", into: board, timeout: .milliseconds(30), hasFocus: { posted ? nil : true },
-            targetValue: { posted ? "문장" : "" }, onDiagnostic: { diagnostics.append($0) },
-            paste: { posted = true; return true }, submit: { submits += 1; return true }
-        )
-        #expect(result == .unconfirmed)
-        #expect(submits == 0)
-        #expect(board.string(forType: .string) == "문장")
-        #expect(diagnostics.first?.contains("포커스 조회 불가") == true)
-    }
-
-    @Test("조회 불가 뒤 실제 포커스 변경이 확인되면 즉시 중단한다")
-    func explicitFocusChangeAfterUnknownStopsPaste() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var posted = false
-        var reads = 0
-        let result = await TextInserter.insert(
-            "문장", into: board, timeout: .milliseconds(100), hasFocus: {
-                guard posted else { return true }
-                reads += 1
-                if reads == 1 { return nil }
-                return false
-            }, targetValue: { posted ? "문장" : "" }, paste: { posted = true; return true }
-        )
-        #expect(result == .unconfirmed)
-        #expect(reads == 2)
-        #expect(board.string(forType: .string) == "문장")
-    }
-
-    @Test("게시 전 포커스 조회가 늦어도 확인 후에만 게시한다")
-    func initialUnknownFocusWaitsBeforePosting() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var reads = 0
-        var posted = false
-        let result = await TextInserter.insert(
-            "문장", into: board, timeout: .milliseconds(100), hasFocus: {
-                reads += 1
-                return reads <= 2 ? nil : true
-            }, targetValue: { posted ? "문장" : "" }, paste: {
-                #expect(reads >= 3)
-                posted = true
-                return true
-            }
-        )
-        #expect(result == .inserted)
-        #expect(board.string(forType: .string) == "원본")
-    }
-
-    @Test("게시 전 대기 중 나타난 문장을 붙여넣기 성공으로 오인하지 않는다")
-    func baselineRefreshAfterPrePasteFocusWait() async {
-        let board = makePasteboard()
-        defer { board.releaseGlobally() }
-        var value = ""
-        var interrupted = false
-        var submits = 0
-        let result = await TextInserter.insert(
-            "문장", into: board, timeout: .milliseconds(50), hasFocus: {
-                if board.string(forType: .string) == "문장", !interrupted {
-                    interrupted = true
-                    value = "문장"
-                    return nil
-                }
-                return true
-            }, targetValue: { value }, paste: { true }, submit: { submits += 1; return true }
-        )
-        #expect(result == .unconfirmed)
-        #expect(submits == 0)
-    }
-
 }

@@ -312,7 +312,6 @@ final class Coordinator {
         let loggedAt = Date()
         let pressReturn = config.pressesReturn(for: destination, outcome: outcome)
         var insertFailure: String?
-        var terminalPostedWithoutVerification = false
         var insertionDiagnostic = ""
         let insertionTarget = destination == .targetApp ? targetAppName : "현재 앱"
         switch destination {
@@ -320,9 +319,8 @@ final class Coordinator {
             let result = await TextInserter.insert(
                 outcome.text, pressReturn: pressReturn, onDiagnostic: { insertionDiagnostic = $0 }
             )
-            terminalPostedWithoutVerification = result == .postedWithoutVerification
-            if result != .inserted, !terminalPostedWithoutVerification {
-                insertFailure = "삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
+            if result != .posted {
+                insertFailure = "전송을 완료하지 못함 — 입력창과 클립보드를 확인하세요"
             }
         case .targetApp:
             // 녹음 중에 설정이 바뀌어 대상 앱이 비었으면 실행 중이 아닌 것과 같이 다룬다.
@@ -336,10 +334,9 @@ final class Coordinator {
                 result = .notRunning
                 insertionDiagnostic = "게시 전 중단 · 대상 앱이 설정되지 않음"
             }
-            terminalPostedWithoutVerification = result == .postedWithoutVerification
-            if result == .unconfirmed {
-                insertFailure = "\(targetAppName) 삽입 확인 안 됨 — 입력창과 클립보드를 확인하세요"
-            } else if result != .inserted, !terminalPostedWithoutVerification {
+            if result == .failed {
+                insertFailure = "\(targetAppName) 전송을 완료하지 못함 — 입력창과 클립보드를 확인하세요"
+            } else if result != .posted {
                 insertFailure = "\(targetAppName) 앱에 넣을 수 없음 — 삽입 안 함"
             }
         }
@@ -347,8 +344,6 @@ final class Coordinator {
         // 삽입 자체가 안 됐으면 그 사실이 폴백 이유보다 먼저다.
         if let insertFailure {
             overlay.showNotice(insertFailure)
-        } else if terminalPostedWithoutVerification, pressReturn {
-            overlay.showNotice("터미널에 붙여넣기 전송 — Enter는 직접 눌러주세요")
         } else if case .fallback(_, let reason) = outcome {
             overlay.showNotice("\(reason.label) — 원본 삽입")
         }
